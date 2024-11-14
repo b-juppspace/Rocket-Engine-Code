@@ -1,0 +1,14 @@
+# Function file
+# Calculating the area ratio (A/A*) with respect to Mach number (M) through a nozzle for a 
+# given specific heat ratio (k)
+# returns: Area ratio (A/A*)
+
+import math
+
+def Ar_Ma(k, M):
+    term1 = 2 / (k + 1)
+    term2 = 1 + (k - 1) / 2 * M**2
+    term3 = (k + 1) / (2 * (k - 1))
+    
+    area_ratio = (1 / M) * (term1 * term2)**term3
+    return area_ratio

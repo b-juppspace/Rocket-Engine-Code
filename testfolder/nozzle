@@ -1,0 +1,96 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Define the nozzle expansion equations as functions
+def area_ratio_M(M, k):
+    return (1/M) * ((2/(k+1)) * (1 + (k-1)/2 * M**2))**((k+1)/(2*(k-1)))
+
+def pressure_ratio(M, k):
+    return (1 + (k-1)/2 * M**2)**(-k/(k-1))
+
+def area_ratio_to_pressure_ratio(P_r, k):
+    n1 = (k-1)/2
+    n2 = 2 / (k+1)
+    n3 = (k+1)/(k-1)
+    num = n1 * n2**n3
+    d1 = P_r**(2/k)
+    d2 = (k-1)/k
+    d3 = 1 - P_r**d2
+    den = d1 * d3
+    return np.sqrt(num/den)
+
+def temperature_ratio(M, k):
+    return (1 + (k-1)/2 * M**2)**(-1)
+
+def density_ratio(M, k):
+    return (1 + (k-1)/2 * M**2)**(1/(k-1))
+
+# Mach number range
+M_values = np.linspace(0.1, 5, 500)
+
+# Pressure ratio range
+P_r_values = np.linspace(0.1, 1, 500)
+
+# List of k values for the 2D plot
+k_values = [1.1, 1.2, 1.3, 1.4]
+
+# Create subplots for all the data sets together
+fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+
+# Plot Area Ratio vs. Mach Number for each k value
+for k in k_values:
+    A_At_values = area_ratio_M(M_values, k)
+    axs[0, 0].plot(M_values, A_At_values, label=f'k = {k}')
+
+axs[0, 0].set_title('Area Ratio vs. Mach Number')
+axs[0, 0].set_xlabel('Mach Number (Ma)')
+axs[0, 0].set_ylabel('Area Ratio (A/At)')
+axs[0, 0].set_yscale('log')
+axs[0, 0].grid(True)
+axs[0, 0].legend()
+
+# Plot Pressure Ratio vs. Mach Number for each k value
+for k in k_values:
+    P_Pt_values = pressure_ratio(M_values, k)
+    axs[0, 1].plot(M_values, P_Pt_values, label=f'k = {k}')
+
+axs[0, 1].set_title('Pressure Ratio vs. Mach Number')
+axs[0, 1].set_xlabel('Mach Number (Ma)')
+axs[0, 1].set_ylabel('Pressure Ratio (P/Pt)')
+axs[0, 1].grid(True)
+axs[0, 1].legend()
+
+# Plot Temperature Ratio vs. Mach Number for each k value
+for k in k_values:
+    T_Tt_values = temperature_ratio(M_values, k)
+    axs[1, 0].plot(M_values, T_Tt_values, label=f'k = {k}')
+
+axs[1, 0].set_title('Temperature Ratio vs. Mach Number')
+axs[1, 0].set_xlabel('Mach Number (Ma)')
+axs[1, 0].set_ylabel('Temperature Ratio (T/Tt)')
+axs[1, 0].grid(True)
+axs[1, 0].legend()
+
+# Plot Density Ratio vs. Mach Number for each k value
+for k in k_values:
+    rho_rhot_values = density_ratio(M_values, k)
+    axs[1, 1].plot(M_values, rho_rhot_values, label=f'k = {k}')
+
+axs[1, 1].set_title('Density Ratio vs. Mach Number')
+axs[1, 1].set_xlabel('Mach Number (Ma)')
+axs[1, 1].set_ylabel('Density Ratio (rho/rhot)')
+axs[1, 1].grid(True)
+axs[1, 1].legend()
+
+# Plot Area Ratio vs. Pressure Ratio for each k value
+plt.figure(figsize=(8, 6))
+for k in k_values:
+    A_P_values = area_ratio_to_pressure_ratio(P_r_values, k)
+    plt.plot(P_r_values, A_P_values, label=f'k = {k}')
+
+plt.title('Area Ratio vs. Pressure Ratio')
+plt.xlabel('Pressure Ratio (Pe/Pc)')
+plt.ylabel('Area Ratio (A/At)')
+plt.grid(True)
+plt.legend()
+plt.show()

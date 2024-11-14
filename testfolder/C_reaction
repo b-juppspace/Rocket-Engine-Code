@@ -1,0 +1,42 @@
+# Constants
+Hf_CH3OH_l = -238.7  # kJ/mol, enthalpy of formation of liquid methanol
+Hf_O2 = 0.0          # kJ/mol, enthalpy of formation of oxygen
+Hf_CO2 = -393.5      # kJ/mol, enthalpy of formation of carbon dioxide
+Hf_H2O_g = -241.8    # kJ/mol, enthalpy of formation of gaseous water
+Hvap_CH3OH = 37.6    # kJ/mol, enthalpy of vaporization of methanol
+
+# Number of moles
+n_CH3OH = 2          # moles of methanol
+n_O2 = 3             # moles of oxygen
+n_CO2 = 2            # moles of carbon dioxide
+n_H2O = 4            # moles of water
+
+# Heat capacities (average values)
+Cp_CO2 = 37.12        # J/(mol*K), specific heat capacity of CO2 at 298K
+Cp_H2O = 33.6        # J/(mol*K), specific heat capacity of H2O
+
+
+# Calculate enthalpy of reactants including vaporization
+H_reactants = (n_CH3OH * Hf_CH3OH_l + n_CH3OH * Hvap_CH3OH) + (n_O2 * Hf_O2)
+print(f"Enthalpy of Reactants: {H_reactants:.2f} kJ")
+
+# Calculate enthalpy of products
+H_products = (n_CO2 * Hf_CO2) + (n_H2O * Hf_H2O_g)
+print(f"Enthalpy of Products: {H_products:.2f} kJ")
+
+# Total enthalpy change
+Delta_H = H_products - H_reactants
+print(f"Total Enthalpy Change (Delta H): {Delta_H:.2f} kJ")
+
+# Convert Delta_H to Joules
+Delta_H_J = Delta_H * 1000
+
+# Energy balance equation: solving for Tf
+# Delta_H_J = n_CO2 * Cp_CO2 * (Tf - 298) + n_H2O * Cp_H2O * (Tf - 298)
+# Rearranged: Delta_H_J = (n_CO2 * Cp_CO2 + n_H2O * Cp_H2O) * (Tf - 298)
+
+total_Cp = (n_CO2 * Cp_CO2) + (n_H2O * Cp_H2O)
+Tf = Delta_H_J / total_Cp + 298
+
+print(f"Adiabatic Flame Temperature (Tf): {Tf:.2f} K")
+
