@@ -1,153 +1,157 @@
 import sys
 import serial
-import numpy as np
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget, QPushButton
-from PyQt5.QtGui import QFont
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
+import threading
+import pyqtgraph as pg
+import time
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QDial
 
-class PressurePIDGUI(QMainWindow):
+class PressureControlGUI(QWidget):
     def __init__(self):
         super().__init__()
-
-        self.setWindowTitle("Pressure and PID Control")
-        self.setGeometry(100, 100, 1200, 800)  # Adjust window size to accommodate the graphs
-
-        # Setup UI
-        self.main_widget = QWidget(self)
-        self.layout = QVBoxLayout(self.main_widget)
-
-        # Create plot area (6 subplots)
-        self.figure = Figure(figsize=(12, 8))  # Increased figure size for 6 subplots
-        self.canvas = FigureCanvas(self.figure)
-        self.layout.addWidget(self.canvas)
-
-        # Create buttons
-        self.init_button = QPushButton('Initialize Serial')
-        self.init_button.setFont(QFont("Arial", 14))
-        self.layout.addWidget(self.init_button)
-        self.init_button.clicked.connect(self.initialize_serial)
-
-        self.start_button = QPushButton('Start Test')
-        self.start_button.setFont(QFont("Arial", 14))
-        self.layout.addWidget(self.start_button)
-        self.start_button.clicked.connect(self.start_test)
-
-        self.main_widget.setLayout(self.layout)
-        self.setCentralWidget(self.main_widget)
-
-        # Setup serial connection (not opened yet)
-        self.ser = None
-
-        # Initialize data containers
-        self.pressure_data_A0_A1 = []
-        self.pressure_data_A2_A3 = []
-        self.valve_pwm_1 = []
-        self.valve_pwm_2 = []
-        self.pressure_data_A4 = []
-        self.pressure_data_A5 = []
-
-        # Setup timer to periodically update the graph and retrieve serial data
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_graph)
-        self.timer.start(1000)  # Update every second
-
-    def initialize_serial(self):
-        if self.ser is None:
+        self.serial_conn = None
+        self.running = False
+        self.start_time = None
+        self.time_series = []
+        self.pressure_data = []
+        self.pwm_data = []
+        self.initUI()
+    
+    def initUI(self):
+        layout = QVBoxLayout()
+        
+        self.label = QLabel("Pressure Data: Waiting...")
+        layout.addWidget(self.label)
+        
+        self.init_serial_button = QPushButton("Initialize Serial Port")
+        self.init_serial_button.clicked.connect(self.init_serial)
+        layout.addWidget(self.init_serial_button)
+        
+        self.valve1_label = QLabel("Valve 1: 0.00")
+        layout.addWidget(self.valve1_label)
+        self.valve1_dial = QDial()
+        self.valve1_dial.setRange(0, 30)  # 0 to 10 with 0.33 increments
+        self.valve1_dial.valueChanged.connect(self.update_valve1)
+        layout.addWidget(self.valve1_dial)
+        
+        self.valve2_label = QLabel("Valve 2: 0.00")
+        layout.addWidget(self.valve2_label)
+        self.valve2_dial = QDial()
+        self.valve2_dial.setRange(0, 240)  # 0 to 80 with 0.33 increments
+        self.valve2_dial.valueChanged.connect(self.update_valve2)
+        layout.addWidget(self.valve2_dial)
+        
+        self.start_button = QPushButton("Begin Test")
+        self.start_button.clicked.connect(lambda: self.send_command("BEGIN_TEST"))
+        layout.addWidget(self.start_button)
+        
+        self.ignition_button = QPushButton("Start Ignition Sequence")
+        self.ignition_button.clicked.connect(lambda: self.send_command("START_IGNITION"))
+        layout.addWidget(self.ignition_button)
+        
+        self.shutdown_button = QPushButton("System Shutdown")
+        self.shutdown_button.clicked.connect(lambda: self.send_command("SHUTDOWN"))
+        layout.addWidget(self.shutdown_button)
+        
+        self.save_button = QPushButton("Save Data")
+        self.save_button.clicked.connect(self.save_data)
+        layout.addWidget(self.save_button)
+        
+        self.plot_widgets = []
+        self.plot_curves = []
+        self.plot_data = []
+        titles = ["A0 & A1", "PWM1", "A2 & A3", "PWM2", "A4 & A5"]
+        for title in titles:
+            plot_widget = pg.PlotWidget(title=title)
+            plot_curve = plot_widget.plot()
+            layout.addWidget(plot_widget)
+            self.plot_widgets.append(plot_widget)
+            self.plot_curves.append(plot_curve)
+            self.plot_data.append([])
+        
+        self.setLayout(layout)
+        self.setWindowTitle("Pressure Control GUI")
+        self.resize(500, 600)
+    
+    def init_serial(self):
+        try:
+            self.serial_conn = serial.Serial("COM3", 115200, timeout=1)
+            self.running = True
+            self.start_time = time.time()
+            self.start_serial_thread()
+        except serial.SerialException as e:
+            self.label.setText(f"Error: {e}")
+    
+    def send_command(self, command):
+        if self.serial_conn and self.serial_conn.is_open:
+            self.serial_conn.write((command + "\n").encode())
+    
+    def update_valve1(self):
+        value = self.valve1_dial.value() * 0.33
+        self.valve1_label.setText(f"Valve 1: {value:.2f}")
+        self.send_setpoints()
+    
+    def update_valve2(self):
+        value = self.valve2_dial.value() * 0.33
+        self.valve2_label.setText(f"Valve 2: {value:.2f}")
+        self.send_setpoints()
+    
+    def send_setpoints(self):
+        if self.serial_conn and self.serial_conn.is_open:
+            valve1_value = self.valve1_dial.value() * 0.33
+            valve2_value = self.valve2_dial.value() * 0.33
+            self.serial_conn.write(f"SETPOINTS,{valve1_value},{valve2_value}\n".encode())
+    
+    def start_serial_thread(self):
+        thread = threading.Thread(target=self.read_serial_data, daemon=True)
+        thread.start()
+    
+    def read_serial_data(self):
+        while self.running and self.serial_conn:
             try:
-                # Open the serial connection (replace 'COM3' with your actual port)
-                self.ser = serial.Serial('COM3', 9600, timeout=1)
-                self.ser.write(b'INIT_SERIAL\n')  # Send the initialization command to Arduino
-                print("Sent INIT_SERIAL to Arduino")
-                self.init_button.setEnabled(False)  # Disable the init button after it's been clicked
+                data = self.serial_conn.readline().decode().strip()
+                current_time = time.time() - self.start_time
+                self.time_series.append(current_time)
+                
+                if data.startswith("Pressure Data:"):
+                    values = list(map(float, data.split(":")[1].split(",")))
+                    self.pressure_data.append(values)
+                    self.plot_data[0].append(sum(values[0:2])/2)  # A0 & A1
+                    self.plot_data[2].append(sum(values[2:4])/2)  # A2 & A3
+                    self.plot_data[4].append(sum(values[4:6])/2)  # A4 & A5
+                    self.update_gui()
+                elif data.startswith("PWM Data:"):
+                    values = list(map(float, data.split(":")[1].split(",")))
+                    self.pwm_data.append(values)
+                    self.plot_data[1].append(values[0])  # PWM1
+                    self.plot_data[3].append(values[1])  # PWM2
+                    self.update_gui()
             except Exception as e:
-                print(f"Error opening serial port: {e}")
-
-    def start_test(self):
-        if self.ser is not None:
-            print("Test Started")
-            self.ser.write(b'BEGIN_TEST\n')  # Command to begin test
-        else:
-            print("Serial connection not initialized yet!")
-
-    def update_graph(self):
-        if self.ser is not None and self.ser.in_waiting > 0:
-            # Read data from the Arduino, assuming it's sending comma-separated values
-            data = self.ser.readline().decode('utf-8').strip()
-            if data:
-                try:
-                    # Assuming Arduino sends data in the format: A0,A1,A2,A3,valve_pwm_1,valve_pwm_2,A4,A5
-                    A0, A1, A2, A3, valve_pwm_1, valve_pwm_2, A4, A5 = map(float, data.split(','))
-                    # Append the values to respective lists
-                    self.pressure_data_A0_A1.append((A0, A1))
-                    self.pressure_data_A2_A3.append((A2, A3))
-                    self.valve_pwm_1.append(valve_pwm_1)
-                    self.valve_pwm_2.append(valve_pwm_2)
-                    self.pressure_data_A4.append(A4)
-                    self.pressure_data_A5.append(A5)
-
-                    # Keep only the latest 50 values for smooth plotting
-                    self.pressure_data_A0_A1 = self.pressure_data_A0_A1[-50:]
-                    self.pressure_data_A2_A3 = self.pressure_data_A2_A3[-50:]
-                    self.valve_pwm_1 = self.valve_pwm_1[-50:]
-                    self.valve_pwm_2 = self.valve_pwm_2[-50:]
-                    self.pressure_data_A4 = self.pressure_data_A4[-50:]
-                    self.pressure_data_A5 = self.pressure_data_A5[-50:]
-
-                    # Update the graph
-                    self.plot_data()
-                except ValueError:
-                    print("Error parsing data:", data)
-
-    def plot_data(self):
-        self.figure.clear()
-
-        # Create subplots: 6 graphs
-        ax1 = self.figure.add_subplot(231)  # Graph 1: A0 and A1 pressure signals
-        ax2 = self.figure.add_subplot(232)  # Graph 2: A2 and A3 pressure signals
-        ax3 = self.figure.add_subplot(233)  # Graph 3: Valve 1 PWM
-        ax4 = self.figure.add_subplot(234)  # Graph 4: Valve 2 PWM
-        ax5 = self.figure.add_subplot(235)  # Graph 5: A4 pressure signal
-        ax6 = self.figure.add_subplot(236)  # Graph 6: A5 pressure signal
-
-        # Plot A0 and A1 pressure signals
-        ax1.plot([x[0] for x in self.pressure_data_A0_A1], label="A0 Pressure", color='blue')
-        ax1.plot([x[1] for x in self.pressure_data_A0_A1], label="A1 Pressure", color='orange')
-        ax1.set_ylabel("Pressure (Pa)")
-        ax1.legend(loc="upper left")
-
-        # Plot A2 and A3 pressure signals
-        ax2.plot([x[0] for x in self.pressure_data_A2_A3], label="A2 Pressure", color='green')
-        ax2.plot([x[1] for x in self.pressure_data_A2_A3], label="A3 Pressure", color='red')
-        ax2.set_ylabel("Pressure (Pa)")
-        ax2.legend(loc="upper left")
-
-        # Plot Valve 1 PWM
-        ax3.plot(self.valve_pwm_1, label="Valve 1 PWM", color='purple')
-        ax3.set_ylabel("PWM (%)")
-        ax3.legend(loc="upper left")
-
-        # Plot Valve 2 PWM
-        ax4.plot(self.valve_pwm_2, label="Valve 2 PWM", color='brown')
-        ax4.set_ylabel("PWM (%)")
-        ax4.legend(loc="upper left")
-
-        # Plot A4 pressure signal
-        ax5.plot(self.pressure_data_A4, label="A4 Pressure", color='cyan')
-        ax5.set_ylabel("Pressure (Pa)")
-        ax5.legend(loc="upper left")
-
-        # Plot A5 pressure signal
-        ax6.plot(self.pressure_data_A5, label="A5 Pressure", color='magenta')
-        ax6.set_ylabel("Pressure (Pa)")
-        ax6.legend(loc="upper left")
-
-        # Redraw the canvas to update the figure
-        self.canvas.draw()
+                print(f"Serial Read Error: {e}")
+    
+    def update_gui(self):
+        if self.time_series:
+            for i in range(5):
+                self.plot_curves[i].setData(self.time_series, self.plot_data[i])
+            self.label.setText(f"Pressure Data: {self.pressure_data[-1]}")
+    
+    def save_data(self):
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getSaveFileName(self, "Save Data", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if file_name:
+            with open(file_name, "w") as file:
+                file.write("Time,Pressure_A0,Pressure_A1,Pressure_A2,Pressure_A3,Pressure_A4,Pressure_A5,PWM1,PWM2\n")
+                for i in range(len(self.time_series)):
+                    row = [self.time_series[i]] + self.pressure_data[i] + self.pwm_data[i]
+                    file.write(",".join(map(str, row)) + "\n")
+    
+    def closeEvent(self, event):
+        self.running = False
+        if self.serial_conn:
+            self.serial_conn.close()
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = PressurePIDGUI()
-    window.show()
+    gui = PressureControlGUI()
+    gui.show()
     sys.exit(app.exec_())
