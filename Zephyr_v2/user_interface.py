@@ -3,147 +3,596 @@ import serial
 import threading
 import pyqtgraph as pg
 import time
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QDial
+import csv
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QSlider, QHBoxLayout, QTabWidget, QTextEdit, QLineEdit
+from PyQt5.QtGui import QPalette, QColor, QFont
+from PyQt5.QtCore import Qt
+import os
+from datetime import datetime
 
 class PressureControlGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.serial_conn = None
         self.running = False
-        self.start_time = None
-        self.time_series = []
-        self.pressure_data = []
-        self.pwm_data = []
+        # insert variable list here?
         self.initUI()
     
     def initUI(self):
-        layout = QVBoxLayout()
+        self.setWindowTitle("Command Centre")
+        self.setFixedSize(1400, 900)
+
+        # Setup Variables -------------------------------------------------------
+        font = QFont("Consolas", 10)
+        small_font = QFont("Consolas", 8)
+        header_font = QFont("Consolas", 12, QFont.Bold)
+        title_font = QFont("Consolas", 16, QFont.Bold)
+        self.setFont(font)
+        graph_label = "<span style='font-size:10pt; font-weight:bold; color:white; font-family:Consolas;'>{}</span>"
+         
         
-        self.label = QLabel("Pressure Data: Waiting...")
-        layout.addWidget(self.label)
+        # Setup main layout -----------------------------------------------------
+
+        main_layout = QHBoxLayout()
+
+        # Tab setup -----------------------------------------------------
+
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget {
+                background-color: #000000 !important;  /* Ensure tab widget background is black */
+                color: #ffffff;
+                border: none;
+            }
+
+            QTabWidget::pane {
+                background-color: #000000 !important;  /* Ensure the content area background is also black */
+                border: none;
+            }
+
+            QTabBar::tab {
+                background-color: #ffffff;
+                color: #000000;
+                height: 30px;
+                width: 140px;
+                padding: 5px;
+                border: 1px solid #1e1e2e; /* optional border around each tab */
+            }
+            
+            QTabBar::tab:selected {
+                background-color: #000000;
+                color: #ffffff;
+            }
+
+            QTabBar::tab:hover {
+                background-color: #e9e9e9;
+                color: #000000;
+            }
+        """)                       
+        self.tabs.setFont(font)
+        
+        # Menu layout ------------------------------------------------------
+        self.menu_tab = QWidget()
+        menu_layout = QVBoxLayout()
+        self.menu_tab.setFont(font)
+        self.menu_tab.setLayout(menu_layout)
+
+        self.tabs.addTab(self.menu_tab, "Menu")
+
+        self.menu_title_label = QLabel("Juppspace Test GUI")
+        self.menu_title_label.setFont(QFont(title_font))
+        self.menu_title_label.setStyleSheet("color: white;")
+        menu_layout.addWidget(self.menu_title_label)
+
+        # Settings layout ------------------------------------------------------
+        self.connection_tab = QWidget()
+        connection_layout = QVBoxLayout()
+        self.connection_tab.setFont(font)
+        self.connection_tab.setLayout(connection_layout)
+        self.tabs.addTab(self.connection_tab, "Settings")
+
+        self.connection_title_label = QLabel("Terminal")
+        self.connection_title_label.setFont(QFont(header_font))
+        self.connection_title_label.setStyleSheet("color: white;")
+        connection_layout.addWidget(self.connection_title_label)
+
+        self.connection_output = QTextEdit()
+        self.connection_output.setReadOnly(True)
+        self.connection_output.setStyleSheet("background-color: #000000; color: #ffffff;")
+        self.connection_output.setFont(font)
+        connection_layout.addWidget(self.connection_output)
         
         self.init_serial_button = QPushButton("Initialize Serial Port")
         self.init_serial_button.clicked.connect(self.init_serial)
-        layout.addWidget(self.init_serial_button)
+        self.init_serial_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.init_serial_button.setFont(font)
+        connection_layout.addWidget(self.init_serial_button)
         
+        self.test_connection_button = QPushButton("Test Connection")
+        self.test_connection_button.clicked.connect(self.test_connection)
+        self.test_connection_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.test_connection_button.setFont(font)
+        connection_layout.addWidget(self.test_connection_button)
+
+        self.tune_label = QLabel("Tune PID K-Values")
+        self.tune_label.setFont(header_font)
+        self.tune_label.setStyleSheet("color: #ffffff;")
+        connection_layout.addWidget(self.tune_label)
+        
+        self.kp_label = QLabel("Kp: 1.00")
+        self.kp_label.setFont(font)
+        self.kp_label.setStyleSheet("color: #ffffff;")
+        connection_layout.addWidget(self.kp_label)
+
+        self.kp_slider = QSlider(Qt.Horizontal)
+        self.kp_slider.setRange(0, 80)
+        self.kp_slider.setValue(10)
+        self.kp_slider.valueChanged.connect(self.update_kp)
+        self.kp_slider.setStyleSheet("""
+            QSlider::handle:horizontal {
+                background: #ffffff;
+            }
+        """)
+        connection_layout.addWidget(self.kp_slider)
+        
+        self.ki_label = QLabel("Ki: 5.00")
+        self.ki_label.setFont(QFont(font))
+        self.ki_label.setStyleSheet("color: #ffffff;")
+        connection_layout.addWidget(self.ki_label)
+
+        self.ki_slider = QSlider(Qt.Horizontal)
+        self.ki_slider.setRange(0, 80)
+        self.ki_slider.setValue(50)
+        self.ki_slider.valueChanged.connect(self.update_ki)
+        self.ki_slider.setStyleSheet("""
+            QSlider::handle:horizontal {
+                background: #ffffff;
+            }
+        """)
+        connection_layout.addWidget(self.ki_slider)
+        
+        self.kd_label = QLabel("Kd: 2.00")
+        self.kd_label.setFont(QFont(font))
+        self.kd_label.setStyleSheet("color: #ffffff;")
+        connection_layout.addWidget(self.kd_label)
+
+        self.kd_slider = QSlider(Qt.Horizontal)
+        self.kd_slider.setRange(0, 80)
+        self.kd_slider.setValue(20)
+        self.kd_slider.valueChanged.connect(self.update_kd)
+        self.kd_slider.setStyleSheet("""
+            QSlider::handle:horizontal {
+                background: #ffffff;
+            }
+        """)
+        connection_layout.addWidget(self.kd_slider)
+        
+        self.send_k_button = QPushButton("Send K Values")
+        self.send_k_button.clicked.connect(self.send_k_values_connection)
+        self.send_k_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.send_k_button.setFont(font)
+        connection_layout.addWidget(self.send_k_button)
+        
+        self.note_label = QLabel("Note: Open valves to complete PID tuning tests. Valve will open to provide pressure of 45psi for air and 2 psi for fuel, edit K values for tuning of response.")
+        self.note_label.setWordWrap(True)  # Allows text wrapping for long messages
+        self.note_label.setStyleSheet("background-color: #000000; color: #ffffff; ")
+        self.note_label.setFont(small_font)
+        connection_layout.addWidget(self.note_label)
+
+        self.pid_tune_test_button = QPushButton("Begin PID Tune Test")
+        self.pid_tune_test_button.clicked.connect(self.pid_tune_test_connection)
+        self.pid_tune_test_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.pid_tune_test_button.setFont(font)
+        connection_layout.addWidget(self.pid_tune_test_button)
+        
+        # PID Tune Test Graph Layout
+        graph_layout = QHBoxLayout()
+        
+        self.graph_V1_PID = pg.PlotWidget()
+        self.graph_V1_PID.setTitle(graph_label.format("Valve 1"))
+        self.graph_V1_PID.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_V1_PID.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_V1_PID.getAxis('left').setStyle(tickFont=font)
+        self.graph_V1_PID.getAxis('bottom').setStyle(tickFont=font)
+
+        self.graph_V2_PID = pg.PlotWidget()
+        self.graph_V2_PID.setTitle(graph_label.format("Valve 2"))
+        self.graph_V2_PID.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_V2_PID.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_V2_PID.getAxis('left').setStyle(tickFont=font)
+        self.graph_V2_PID.getAxis('bottom').setStyle(tickFont=font)
+
+        graph_layout.addWidget(self.graph_V1_PID)
+        graph_layout.addWidget(self.graph_V2_PID)
+        
+        connection_layout.addLayout(graph_layout)
+        
+        # PLay tab layout --------------------------------------------
+
+        self.control_tab = QWidget()
+        control_layout = QVBoxLayout()
+        self.control_tab.setLayout(control_layout)
+        self.tabs.addTab(self.control_tab, "Play")
+        
+        self.control_title_label2 = QLabel("Terminal")
+        self.control_title_label2.setFont(QFont("Consolas", 12, QFont.Bold))
+        self.control_title_label2.setStyleSheet("color: white;")
+        control_layout.addWidget(self.control_title_label2)
+
+        self.control_output = QTextEdit()
+        self.control_output.setReadOnly(True)
+        self.control_output.setStyleSheet("background-color: #000000; color: #ffffff;")
+        self.control_output.setFont(font)
+        control_layout.addWidget(self.control_output)
+
         self.valve1_label = QLabel("Valve 1: 0.00")
-        layout.addWidget(self.valve1_label)
-        self.valve1_dial = QDial()
-        self.valve1_dial.setRange(0, 30)  # 0 to 10 with 0.33 increments
-        self.valve1_dial.valueChanged.connect(self.update_valve1)
-        layout.addWidget(self.valve1_dial)
+        self.valve1_label.setFont(QFont("Consolas", 10))
+        self.valve1_label.setStyleSheet("color: #ffffff;")
+        control_layout.addWidget(self.valve1_label)
+
+        self.valve1_slider = QSlider(Qt.Horizontal)
+        self.valve1_slider.setRange(0, 30)
+        self.valve1_slider.valueChanged.connect(self.update_valve1) # Live value change 
+        self.valve1_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
+        control_layout.addWidget(self.valve1_slider)
         
         self.valve2_label = QLabel("Valve 2: 0.00")
-        layout.addWidget(self.valve2_label)
-        self.valve2_dial = QDial()
-        self.valve2_dial.setRange(0, 240)  # 0 to 80 with 0.33 increments
-        self.valve2_dial.valueChanged.connect(self.update_valve2)
-        layout.addWidget(self.valve2_dial)
+        self.valve2_label.setFont(QFont("Consolas", 10))
+        self.valve2_label.setStyleSheet("color: #ffffff;")
+        control_layout.addWidget(self.valve2_label)
+
+        self.valve2_slider = QSlider(Qt.Horizontal)
+        self.valve2_slider.setRange(0, 240)
+        self.valve2_slider.valueChanged.connect(self.update_valve2)  
+        self.valve2_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
+        control_layout.addWidget(self.valve2_slider)
         
-        self.start_button = QPushButton("Begin Test")
-        self.start_button.clicked.connect(lambda: self.send_command("BEGIN_TEST"))
-        layout.addWidget(self.start_button)
+        button_layout = QHBoxLayout()
+
+        self.ignition_button = QPushButton("Ignition")
+        self.ignition_button.clicked.connect(self.ignition)
+        self.ignition_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.ignition_button.setFont(font)
+        control_layout.addWidget(self.ignition_button)
+
+        control_layout.addLayout(button_layout)
         
-        self.ignition_button = QPushButton("Start Ignition Sequence")
-        self.ignition_button.clicked.connect(lambda: self.send_command("START_IGNITION"))
-        layout.addWidget(self.ignition_button)
+        # Graph Layout 2
+        graph_layout2 = QHBoxLayout()
+
+        graph_column1 = QVBoxLayout()
+
+        self.graph_A0A1 = pg.PlotWidget()
+        self.graph_A0A1.setTitle(graph_label.format("A0/A1"))
+        self.graph_A0A1.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_A0A1.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_A0A1.getAxis('left').setStyle(tickFont=font)
+        self.graph_A0A1.getAxis('bottom').setStyle(tickFont=font)
+        graph_column1.addWidget(self.graph_A0A1)
+
+        self.graph_PWM1 = pg.PlotWidget()
+        self.graph_PWM1.setTitle(graph_label.format("PWM1"))
+        self.graph_PWM1.setLabel('left', graph_label.format("PWM(0-255)"))
+        self.graph_PWM1.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_PWM1.getAxis('left').setStyle(tickFont=font)
+        self.graph_PWM1.getAxis('bottom').setStyle(tickFont=font)
+        graph_column1.addWidget(self.graph_PWM1)
         
-        self.shutdown_button = QPushButton("System Shutdown")
-        self.shutdown_button.clicked.connect(lambda: self.send_command("SHUTDOWN"))
-        layout.addWidget(self.shutdown_button)
+        graph_column2 = QVBoxLayout()
+
+        self.graph_A2A3 = pg.PlotWidget()
+        self.graph_A2A3.setTitle(graph_label.format("A2/A3"))
+        self.graph_A2A3.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_A2A3.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_A2A3.getAxis('left').setStyle(tickFont=font)
+        self.graph_A2A3.getAxis('bottom').setStyle(tickFont=font)
+        graph_column2.addWidget(self.graph_A2A3)
+
+        self.graph_PWM2 = pg.PlotWidget()
+        self.graph_PWM2.setTitle(graph_label.format("PWM2"))
+        self.graph_PWM2.setLabel('left', graph_label.format("PWM(0-255)"))
+        self.graph_PWM2.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_PWM2.getAxis('left').setStyle(tickFont=font)
+        self.graph_PWM2.getAxis('bottom').setStyle(tickFont=font)
+        graph_column2.addWidget(self.graph_PWM2)
+
+        self.graph_A4A5 = pg.PlotWidget()
+        self.graph_A4A5.setTitle(graph_label.format("A4/A5"))
+        self.graph_A4A5.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_A4A5.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_A4A5.getAxis('left').setStyle(tickFont=font)
+        self.graph_A4A5.getAxis('bottom').setStyle(tickFont=font)
         
-        self.save_button = QPushButton("Save Data")
-        self.save_button.clicked.connect(self.save_data)
-        layout.addWidget(self.save_button)
+        graph_layout2.addLayout(graph_column1)
+        graph_layout2.addLayout(graph_column2)
+        graph_layout2.addWidget(self.graph_A4A5)
         
-        self.plot_widgets = []
-        self.plot_curves = []
-        self.plot_data = []
-        titles = ["A0 & A1", "PWM1", "A2 & A3", "PWM2", "A4 & A5"]
-        for title in titles:
-            plot_widget = pg.PlotWidget(title=title)
-            plot_curve = plot_widget.plot()
-            layout.addWidget(plot_widget)
-            self.plot_widgets.append(plot_widget)
-            self.plot_curves.append(plot_curve)
-            self.plot_data.append([])
+        control_layout.addLayout(graph_layout2)
+
+    # Health tab layout --------------------------------------------
+
+        self.health_tab = QWidget()
+        health_layout = QVBoxLayout()
+        self.health_tab.setLayout(health_layout)
+        self.tabs.addTab(self.health_tab, "Health")
         
-        self.setLayout(layout)
-        self.setWindowTitle("Pressure Control GUI")
-        self.resize(500, 600)
+        # Health Graph Layout
+        graph_layout3 = QHBoxLayout()
+        
+        self.graph_delta_A0A1 = pg.PlotWidget()
+        self.graph_delta_A0A1.setTitle(graph_label.format("delta A0/A1"))
+        self.graph_delta_A0A1.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_delta_A0A1.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_delta_A0A1.getAxis('left').setStyle(tickFont=font)
+        self.graph_delta_A0A1.getAxis('bottom').setStyle(tickFont=font)
+
+        self.graph_delta_A2A3 = pg.PlotWidget()
+        self.graph_delta_A2A3.setTitle(graph_label.format("delta A2/A3"))
+        self.graph_delta_A2A3.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_delta_A2A3.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_delta_A2A3.getAxis('left').setStyle(tickFont=font)
+        self.graph_delta_A2A3.getAxis('bottom').setStyle(tickFont=font)
+
+        graph_layout3.addWidget(self.graph_delta_A0A1)
+        graph_layout3.addWidget(self.graph_delta_A2A3)
+
+        health_layout.addLayout(graph_layout3)
+
+
+        main_layout.addWidget(self.tabs)
+        self.setLayout(main_layout)
     
+    #--------------Stored Data Variables--------------
+    def variables(self):    
+        self.A0 = []
+        self.A1 = []
+        self.A2 = []
+        self.A3 = []
+        self.A4 = []
+        self.A5 = []
+        self.v1_setpoint = []
+        self.v2_setpoint = []
+        self.v1_output = []
+        self.v2_output = []
+        self.time = []
+        self.delta_A0A1 = []
+        self.delta_A2A3 = []
+        self.v1_max_delta = 70                                # CHECK THESE
+        self.v2_max_delta = 8                                 # CHECK THESE
+    #--------------General Definitions----------------
+
     def init_serial(self):
+        """ Connects GUI to serial port. """
         try:
             self.serial_conn = serial.Serial("COM3", 115200, timeout=1)
             self.running = True
-            self.start_time = time.time()
-            self.start_serial_thread()
         except serial.SerialException as e:
-            self.label.setText(f"Error: {e}")
-    
+            self.connection_output.append(f"Error: {e}")
+
     def send_command(self, command):
+        """ Sends a command through the serial port. """
         if self.serial_conn and self.serial_conn.is_open:
             self.serial_conn.write((command + "\n").encode())
+
+    def read_serial_data(self):
+        """ Reads a single line from the serial port. """
+        if self.serial_conn and self.serial_conn.in_waiting:
+            return self.serial_conn.readline().decode().strip().split(",")
+        return None
     
+    def save_data(self):
+        # Get current directory
+        current_dir = os.getcwd()
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%m-%d_%H-%M")
+        file_name = os.path.join(current_dir, f"DATA_{timestamp}.csv")
+
+        with open(file_name, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(["Time", "A0", "A1", "A2", "A3", "A4", "A5", "V1 Setpoint", "V2 Setpoint", "V1 Output", "V2 Output"])
+            
+            for i in range(len(self.time)):  # Use self.time instead of self.time_series
+                writer.writerow([
+                    self.time[i], self.A0[i], self.A1[i], self.A2[i], self.A3[i], self.A4[i], self.A5[i], 
+                    self.v1_setpoint[i], self.v2_setpoint[i], self.v1_output[i], self.v2_output[i]
+                ])
+
+    #-------------K-Slider Definitions-----------------
+
+    def update_kp(self):
+        value = self.kp_slider.value() * 0.1
+        self.kp_label.setText(f"kp: {value:.2f}")
+
+    def update_ki(self):
+        value = self.ki_slider.value() * 0.1
+        self.ki_label.setText(f"ki: {value:.2f}")
+
+    def update_kd(self):
+        value = self.kd_slider.value() * 0.1
+        self.kd_label.setText(f"kd: {value:.2f}")
+
+    def send_k_values_connection(self):
+        self.send_command("UPDATE_K_VALUES")
+
+        # Wait for Arduino to confirm it has entered the state
+        while True:
+            response = self.read_serial_data()
+            if "State set to UPDATEKVALUES" in response:  # Arduino confirms state change
+                self.connection_output.append(response)
+                break  # Exit loop when confirmation is received
+            time.sleep(0.05)  # Small delay to avoid busy-waiting
+        
+        kp_value = self.kp_slider.value() * 0.1
+        ki_value = self.ki_slider.value() * 0.1
+        kd_value = self.kd_slider.value() * 0.1
+        self.send_command(f"{kp_value},{ki_value},{kd_value}")
+
+        response = self.read_serial_data()
+        self.connection_output.append(response)
+    
+    #--------------Setpoint-Slider Definitions-----------
+
     def update_valve1(self):
-        value = self.valve1_dial.value() * 0.33
+        value = self.valve1_slider.value() * 0.33
         self.valve1_label.setText(f"Valve 1: {value:.2f}")
         self.send_setpoints()
     
     def update_valve2(self):
-        value = self.valve2_dial.value() * 0.33
+        value = self.valve2_slider.value() * 0.33
         self.valve2_label.setText(f"Valve 2: {value:.2f}")
         self.send_setpoints()
     
     def send_setpoints(self):
         if self.serial_conn and self.serial_conn.is_open:
-            valve1_value = self.valve1_dial.value() * 0.33
-            valve2_value = self.valve2_dial.value() * 0.33
+            valve1_value = self.valve1_slider.value() * 0.33
+            valve2_value = self.valve2_slider.value() * 0.33
             self.serial_conn.write(f"SETPOINTS,{valve1_value},{valve2_value}\n".encode())
+
+    #--------------Test Definitions----------------
+
+    def test_connection(self):
+        """ Tests connection of serial port and receives data for 1 second. """
+        self.send_command("TEST_CONNECTION")
+        
+        while True:
+            response = self.read_serial_data()
+            if response:
+                # Append the response to the QTextEdit widget
+                self.connection_output.append(response)
+
+                # Check if response is 'IDLE'
+                if response == "IDLE":
+                    self.connection_output.append("Test completed. Returning to idle & saving data.")
+                    self.save_data()
+                    self.connection_output.append("Data saved to working directory.")
+                    break
+
+            # Allow UI to update to prevent freezing
+            QApplication.processEvents()
     
-    def start_serial_thread(self):
-        thread = threading.Thread(target=self.read_serial_data, daemon=True)
-        thread.start()
-    
-    def read_serial_data(self):
-        while self.running and self.serial_conn:
-            try:
-                data = self.serial_conn.readline().decode().strip()
-                current_time = time.time() - self.start_time
-                self.time_series.append(current_time)
+    def pid_tune_test_connection(self):
+        """ Tests connection of serial port and receives data for 1 second. """
+        self.send_command("PID_TUNE_TEST")
+
+        while True:
+            response = self.read_serial_data()
+            if response:
+                #Assign variables
+                self.A0.append(float(response[0]))
+                self.A1.append(float(response[1]))
+                self.A2.append(float(response[2]))
+                self.A3.append(float(response[3]))
+                self.A4.append(float(response[4]))
+                self.A5.append(float(response[5]))
+                self.v1_setpoint.append(float(response[6]))
+                self.v2_setpoint.append(float(response[7]))
+                self.v1_output.append(float(response[8]))
+                self.v2_output.append(float(response[9]))
+                self.time.append(float(response[10]))
+
+                # Append deltas directly to the lists
+                self.delta_A0A1.append(float(response[0]) - float(response[1]))  # A0 - A1
+                self.delta_A2A3.append(float(response[2]) - float(response[3]))  # A2 - A3
+
+                # Write to terminal
+                self.connection_output.append("Testing...")
+
+                # Append the response to graphs
+                # Plot for Valve 1: A1, v1_setpoint, v1_output vs. Time
+                self.graph_V1_PID.plot(self.time, self.A1, pen=pg.mkPen(color="#ffffff"), name="A1")
+                self.graph_V1_PID.plot(self.time, self.v1_setpoint, pen=pg.mkPen(color="#bfbfbf"), name="V1 Setpoint")
+                self.graph_V1_PID.plot(self.time, self.v1_output, pen=pg.mkPen(color="#6d6d6d"), name="V1 Output")
+
+                # Plot for Valve 2: A3, v2_setpoint, v2_output vs. Time
+                self.graph_V2_PID.plot(self.time, self.A3, pen=pg.mkPen(color="#ffffff"), name="A3")
+                self.graph_V2_PID.plot(self.time, self.v2_setpoint, pen=pg.mkPen(color="#bfbfbf"), name="V2 Setpoint")
+                self.graph_V2_PID.plot(self.time, self.v2_output, pen=pg.mkPen(color="#6d6d6d"), name="V2 Output")
+
+                # Plot for delta values for health checks: A0-A1, Max_delta vs Time
+                self.graph_delta_A0A1.plot(self.time, self.delta_A0A1, pen=pg.mkPen(color="#ffffff"), name="Delta A0/A1")
+                self.graph_delta_A0A1.plot(self.time, [self.v1_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="MAX Delta A0/A1")
                 
-                if data.startswith("Pressure Data:"):
-                    values = list(map(float, data.split(":")[1].split(",")))
-                    self.pressure_data.append(values)
-                    self.plot_data[0].append(sum(values[0:2])/2)  # A0 & A1
-                    self.plot_data[2].append(sum(values[2:4])/2)  # A2 & A3
-                    self.plot_data[4].append(sum(values[4:6])/2)  # A4 & A5
-                    self.update_gui()
-                elif data.startswith("PWM Data:"):
-                    values = list(map(float, data.split(":")[1].split(",")))
-                    self.pwm_data.append(values)
-                    self.plot_data[1].append(values[0])  # PWM1
-                    self.plot_data[3].append(values[1])  # PWM2
-                    self.update_gui()
-            except Exception as e:
-                print(f"Serial Read Error: {e}")
-    
-    def update_gui(self):
-        if self.time_series:
-            for i in range(5):
-                self.plot_curves[i].setData(self.time_series, self.plot_data[i])
-            self.label.setText(f"Pressure Data: {self.pressure_data[-1]}")
-    
-    def save_data(self):
-        options = QFileDialog.Options()
-        file_name, _ = QFileDialog.getSaveFileName(self, "Save Data", "", "CSV Files (*.csv);;All Files (*)", options=options)
-        if file_name:
-            with open(file_name, "w") as file:
-                file.write("Time,Pressure_A0,Pressure_A1,Pressure_A2,Pressure_A3,Pressure_A4,Pressure_A5,PWM1,PWM2\n")
-                for i in range(len(self.time_series)):
-                    row = [self.time_series[i]] + self.pressure_data[i] + self.pwm_data[i]
-                    file.write(",".join(map(str, row)) + "\n")
-    
+                # Plot for delta values for health checks: A2-A3, Max_delta vs Time
+                self.graph_delta_A2A3.plot(self.time, self.delta_A2A3, pen=pg.mkPen(color="#ffffff"), name="Delta A2/A3")
+                self.graph_delta_A2A3.plot(self.time, [self.v2_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Delta A0/A1")
+
+
+                # Check if response is 'IDLE'
+                if response == "IDLE":
+                    self.connection_output.append("Test completed. Returning to idle & saving data.")
+                    self.save_data()
+                    self.connection_output.append("Data saved to working directory.")
+                    break
+
+            # Allow UI to update to prevent freezing
+            QApplication.processEvents()
+
+    def ignition(self):
+        """Begins ignition of thruster and runs through thrusting sequence."""
+        self.send_command("IGNITION")
+
+        while True:
+            response = self.read_serial_data()
+            if response:
+                #Assign variables
+                self.A0.append(float(response[0]))
+                self.A1.append(float(response[1]))
+                self.A2.append(float(response[2]))
+                self.A3.append(float(response[3]))
+                self.A4.append(float(response[4]))
+                self.A5.append(float(response[5]))
+                self.v1_setpoint.append(float(response[6]))
+                self.v2_setpoint.append(float(response[7]))
+                self.v1_output.append(float(response[8]))
+                self.v2_output.append(float(response[9]))
+                self.time.append(float(response[10]))
+
+                # Append deltas directly to the lists
+                self.delta_A0A1.append(float(response[0]) - float(response[1]))  # A0 - A1
+                self.delta_A2A3.append(float(response[2]) - float(response[3]))  # A2 - A3
+                if self.delta_A0A1[-1] > self.v1_max_delta or self.delta_A2A3 > self.v2_max_delta:
+                    self.send_command("IDLE")
+
+                # Write to terminal
+                self.control_output.append("Testing...")
+
+                # Append the response to graphs
+                # A0/A1
+                self.graph_A0A1.plot(self.time, self.A0, pen=pg.mkPen(color="#ffffff"), name="A0")
+                self.graph_A0A1.plot(self.time, self.A1, pen=pg.mkPen(color="#bfbfbf"), name="A1")
+                self.graph_A0A1.plot(self.time, self.v1_setpoint, pen=pg.mkPen(color="#6d6d6d"), name="V1 Setpoint")
+
+                # Plot for Valve 1: PWM vs. Time
+                self.graph_PWM1.plot(self.time, self.v1_output, pen="g", name="V1 PWM Response")
+
+                # A2/A3
+                self.graph_A2A3.plot(self.time, self.A2, pen=pg.mkPen(color="#ffffff"), name="A0")
+                self.graph_A2A3.plot(self.time, self.A3, pen=pg.mkPen(color="#bfbfbf"), name="A1")
+                self.graph_A2A3.plot(self.time, self.v2_setpoint, pen=pg.mkPen(color="#6d6d6d"), name="V2 Setpoint")
+
+                # Plot for Valve 2: PWM vs. Time
+                self.graph_PWM2.plot(self.time, self.v2_output, pen=pg.mkPen(color="#ffffff"), name="V2 PWM Response")
+
+                # Plot for delta values for health checks: A0-A1, Max_delta vs Time
+                self.graph_delta_A0A1.plot(self.time, self.delta_A0A1, pen=pg.mkPen(color="#ffffff"), name="Delta A0/A1")
+                self.graph_delta_A0A1.plot(self.time, [self.v1_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="MAX Delta A0/A1")
+                
+                # Plot for delta values for health checks: A2-A3, Max_delta vs Time
+                self.graph_delta_A2A3.plot(self.time, self.delta_A2A3, pen=pg.mkPen(color="#ffffff"), name="Delta A2/A3")
+                self.graph_delta_A2A3.plot(self.time, [self.v2_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Delta A0/A1")
+
+
+                # Check if response is 'IDLE'
+                if response == "IDLE":
+                    self.control_output.append("Test completed. Returning to idle & saving data.")
+                    self.save_data()
+                    self.control_output.append("Data saved to working directory.")
+                    break
+
+            # Allow UI to update to prevent freezing
+            QApplication.processEvents()
+
     def closeEvent(self, event):
         self.running = False
         if self.serial_conn:

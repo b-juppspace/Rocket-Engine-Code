@@ -1,5 +1,7 @@
 #include <PID_v1.h>
 
+// SETUP VARIABLES ----------------------------------------
+
 // Pressure Transducer Inputs
 const int pressurePins[6] = {A0, A1, A2, A3, A4, A5};
 double pressures[6];
@@ -10,101 +12,274 @@ double setpoints[2] = {0, 0};  // Updated by GUI
 double outputs[2] = {0, 0};
 
 // PID Setup (Kp, Ki, Kd to be tuned)
-double Kp = 2.0, Ki = 5.0, Kd = 1.0;
-PID pid1(&pressures[0], &outputs[0], &setpoints[0], Kp, Ki, Kd, DIRECT);
-PID pid2(&pressures[1], &outputs[1], &setpoints[1], Kp, Ki, Kd, DIRECT);
+double k_values[3] = {0, 0, 0}; //Updated by GUI
+PID pid1(&pressures[1], &outputs[0], &setpoints[0], k_values[0], k_values[1], k_values[2], DIRECT);
+PID pid2(&pressures[3], &outputs[1], &setpoints[1], k_values[0], k_values[1], k_values[2], DIRECT);
 
-// State Machine
-enum SystemState { IDLE, TESTING, IGNITION, PID_CONTROL, SHUTDOWN };
+// Setup timing sequence and data point counter for data transmission
+unsigned long stateStartTime ;
+unsigned long lastTransmitTime = 0;
+const unsigned long transmitInterval = 100;  // Send data every 100 ms
+unsigned long dataPointCount = 0;
+
+// State Machine -----------------------------------------
+
+enum SystemState { 
+  IDLE, 
+  TESTINGCONNECTION, 
+  UPDATEKVALUES,
+  PIDTUNETEST, 
+  THRUSTING
+  };
+
 SystemState currentState = IDLE;
 
+// Void Loop ------------------------------------------------
+
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);  
+  Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
 }
 
 void loop() {
+  // Check if data is available and process it
   if (Serial.available()) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
-
-    if (command == "INIT_SERIAL") {
-      Serial.begin(9600);
-      digitalWrite(LED_BUILTIN, HIGH);
-      delay(500);
-      digitalWrite(LED_BUILTIN, LOW);
-      Serial.println("Serial Initialized");
-    } else if (command.startsWith("SETPOINTS,")) {
-      updateSetpoints(command);
-    } else {
-      handleSerialCommands(command);
-    }
+    String command = Serial.readStringUntil('\n');  // Read data until newline character
+    handleSerialCommands(command);  // Directly pass the input to the function
   }
 
-  readPressures();
+  // Execute state logic based on the current state
   executeStateLogic();
-  sendData();
 }
 
-void readPressures() {
-  for (int i = 0; i < 6; i++) {
-    pressures[i] = analogRead(pressurePins[i]) * (5.0 / 1023.0);
-  }
-}
+// Handle Serial Commands ---------------------------------------
 
 void handleSerialCommands(String command) {
-  if (command == "BEGIN_TEST") currentState = TESTING;
-  else if (command == "START_IGNITION") currentState = IGNITION;
-  else if (command == "SHUTDOWN") currentState = SHUTDOWN;
+  if (command == "TEST_CONNECTION") {
+    currentState = TESTINGCONNECTION;
+    stateStartTime = millis();
+    // Serial.println("Entering TEST_CONNECTION...")
+  }
+
+  else if (command == "UPDATE_K_VALUES") {
+    currentState = UPDATEKVALUES;
+    stateStartTime = millis();
+    Serial.println("State set to UPDATEKVALUES");
+    // Serial.println("Entering UPDATE_K_VALUES...")
+  }
+
+  else if (command == "PID_TUNE_TEST") {
+    currentState = PIDTUNETEST;
+    stateStartTime = millis(); 
+    // Serial.println("Entering PIDTUNETEST...");
+  }
+
+  else if (command == "IGNITION") {
+    currentState = THRUSTING;
+    stateStartTime = millis();
+  }
+
+  else if (command == "SHUTDOWN");
 }
+
+// Execute State Logic -----------------------------------------------
 
 void executeStateLogic() {
   switch (currentState) {
-    case TESTING:
-      break;
-    case IGNITION:
-      ignitionSequence();
-      currentState = PID_CONTROL;
-      break;
-    case PID_CONTROL:
-      pid1.Compute();
-      pid2.Compute();
-      analogWrite(valvePins[0], outputs[0]);
-      analogWrite(valvePins[1], outputs[1]);
-      break;
-    case SHUTDOWN:
+
+    case IDLE:
+      Serial.println("IDLE");
+      // Ensure valves are fully closed
+      outputs[0] = 0;
+      outputs[1] = 0;
       analogWrite(valvePins[0], 0);
       analogWrite(valvePins[1], 0);
+      break;
+
+    case TESTINGCONNECTION:
+      // Only send data at the specified interval
+      if (millis() - lastTransmitTime >= transmitInterval) {
+        // UPDATE PRESSURES!!
+        for (int i = 0; i < 6; i++) {
+          pressures[i] = analogRead(pressurePins[i]); // Read each analog pin and update pressures[]
+        }
+
+        // Format data as a comma-separated string
+        String data = "";
+
+        // Append data point count
+        data += "DataPointCount:" + String(dataPointCount++) + ",";
+
+        // Append pressure values
+        for (int i = 0; i < 6; i++) {
+          data += String(pressures[i]);
+          if (i < 5) data += ",";  
+        }
+
+        // Append setpoints
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(setpoints[i]);
+        }
+
+        // Append outputs
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(outputs[i]);
+        }
+
+        // Append time
+        data += "," + String(millis() - stateStartTime);
+
+        // Send the data string via Serial
+        Serial.println(data);
+
+        // Update the last transmit time
+        lastTransmitTime = millis();
+      }
+
+      // Check if 0.5 seconds have passed
+      if (millis() - stateStartTime >= 500) {
+        Serial.println("TESTINGCONNECTION complete. Returning to IDLE.");
+        currentState = IDLE;
+      }
+      break;
+    
+    case UPDATEKVALUES:
+      // Check for new command and parse it if available
+      if (Serial.available()) {
+        String input = Serial.readStringUntil('\n');  // Read the incoming string until newline
+        
+        // Check if the input matches the expected format
+        int firstComma = input.indexOf(',');
+        int secondComma = input.indexOf(',', firstComma + 1);
+        
+        // Ensure there are two commas, meaning we have three values
+        if (firstComma > 0 && secondComma != -1) {
+          k_values[0] = input.substring(0, firstComma).toFloat();  // Extract the first value
+          k_values[1] = input.substring(firstComma + 1, secondComma).toFloat();  // Extract the second value
+          k_values[2] = input.substring(secondComma + 1).toFloat();  // Extract the third value
+
+          // Print the updated values to the serial monitor for verification
+          Serial.println("Updated K[P,I,D] Values: " + String(k_values[0]) + ", " + String(k_values[1]) + ", " + String(k_values[2]));
+
+          // Optionally send a confirmation to the GUI
+          Serial.println("K values updated successfully.");
+        } 
+        else {
+          // If the format is incorrect, send an error message
+          Serial.println("Error in UPDATEKVALUES command format");
+        }
+      }
+
+      // Transition back to IDLE state after processing
       currentState = IDLE;
       break;
+
+    case PIDTUNETEST:
+      // Run continuously until 1 second has passed
+      if (millis() - stateStartTime < 1000) {  
+        // Update pressure readings
+        for (int i = 0; i < 6; i++) {
+          pressures[i] = analogRead(pressurePins[i]); // Read each analog pin and update pressures[]
+        }
+    
+        // Set setpoints for PID controllers
+        setpoints[0] = 2;
+        setpoints[1] = 45;
+    
+        // Compute PID outputs
+        pid1.Compute();
+        pid2.Compute();
+    
+        // Control the valves using the computed PID outputs
+        analogWrite(valvePins[0], outputs[0]);
+        analogWrite(valvePins[1], outputs[1]);
+    
+        // Create the data string to send via Serial
+        String data = "";
+        data += "DataPointCount:" + String(dataPointCount++) + ",";  // Include data point count
+        for (int i = 0; i < 6; i++) {
+          data += String(pressures[i]);
+          if (i < 5) data += ",";
+        }
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(setpoints[i]);
+        }
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(outputs[i]);
+        }
+        data += "," + String(millis() - stateStartTime);  // Send elapsed time
+        Serial.println(data);  // Send data via Serial
+    
+      } else {
+        // After 1 second, transition to IDLE state
+        Serial.println("PIDTUNETEST complete. Returning to IDLE.");
+        currentState = IDLE;
+      }
+    
+      break;
+
+    case THRUSTING:
+      // Run continuously until 1 second has passed
+      if (millis() - stateStartTime < 10000) {  
+        // Update pressure readings
+        for (int i = 0; i < 6; i++) {
+          pressures[i] = analogRead(pressurePins[i]); // Read each analog pin and update pressures[]
+        }
+    
+        // Check for new setpoints from Serial
+        if (Serial.available()) {
+          String input = Serial.readStringUntil('\n');
+
+          if (input == "IDLE") {
+            currentState = IDLE;
+          }
+          else if (input.startsWith("SETPOINTS,")) {
+            // Parse the received setpoints
+            int commaIndex1 = input.indexOf(',', 10);  // Find first comma after "SETPOINTS,"
+            if (commaIndex1 != -1) {
+              setpoints[0] = input.substring(10, commaIndex1).toFloat();
+              setpoints[1] = input.substring(commaIndex1 + 1).toFloat();
+            }
+          }
+        }
+
+        // Compute PID outputs
+        pid1.Compute();
+        pid2.Compute();
+    
+        // Control the valves using the computed PID outputs
+        analogWrite(valvePins[0], outputs[0]);
+        analogWrite(valvePins[1], outputs[1]);
+    
+        // Create the data string to send via Serial
+        String data = "";
+        data += "DataPointCount:" + String(dataPointCount++) + ",";  // Include data point count
+        for (int i = 0; i < 6; i++) {
+          data += String(pressures[i]);
+          if (i < 5) data += ",";
+        }
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(setpoints[i]);
+        }
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(outputs[i]);
+        }
+        data += "," + String(millis() - stateStartTime);  // Send elapsed time
+        Serial.println(data);  // Send data via Serial
+    
+      } else {
+        // After 1 second, transition to IDLE state
+        currentState = IDLE;
+      }
+    
+      break;
+
     default:
       break;
+
+    
   }
 }
 
-void ignitionSequence() {
-  analogWrite(valvePins[0], 255);
-  delay(2000);
-  analogWrite(valvePins[0], 0);
-}
 
-void sendData() {
-  Serial.print("Pressure Data:");
-  for (int i = 0; i < 6; i++) {
-    Serial.print(pressures[i]);
-    Serial.print(",");
-  }
-  Serial.print("PWM Data:");
-  Serial.print(outputs[0]);
-  Serial.print(",");
-  Serial.println(outputs[1]);
-}
 
-void updateSetpoints(String command) {
-  int firstComma = command.indexOf(',');
-  int secondComma = command.indexOf(',', firstComma + 1);
-  
-  if (firstComma > 0 && secondComma > firstComma) {
-    setpoints[0] = command.substring(firstComma + 1, secondComma).toFloat();
-    setpoints[1] = command.substring(secondComma + 1).toFloat();
-  }
-}
