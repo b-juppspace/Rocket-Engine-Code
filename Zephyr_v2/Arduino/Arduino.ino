@@ -29,6 +29,7 @@ enum SystemState {
   TESTINGCONNECTION, 
   UPDATEKVALUES,
   PIDTUNETEST, 
+  IGNITION,
   THRUSTING
   };
 
@@ -75,11 +76,10 @@ void handleSerialCommands(String command) {
   }
 
   else if (command == "IGNITION") {
-    currentState = THRUSTING;
+    currentState = IGNITION;
     stateStartTime = millis();
   }
 
-  else if (command == "SHUTDOWN");
 }
 
 // Execute State Logic -----------------------------------------------
@@ -183,13 +183,17 @@ void executeStateLogic() {
         }
     
         // Set setpoints for PID controllers
-        setpoints[0] = 2;
-        setpoints[1] = 45;
+        setpoints[0] = 2.31;
+        setpoints[1] = 45.21;
     
         // Compute PID outputs
         pid1.Compute();
         pid2.Compute();
     
+        // Constrain outputs within the valid PWM range (0-255)
+        outputs[0] = constrain(outputs[0], 0, 255);
+        outputs[1] = constrain(outputs[1], 0, 255);
+
         // Control the valves using the computed PID outputs
         analogWrite(valvePins[0], outputs[0]);
         analogWrite(valvePins[1], outputs[1]);
@@ -218,6 +222,64 @@ void executeStateLogic() {
     
       break;
 
+
+    case IGNITION:
+      // Run continuously until 1 second has passed
+      if (millis() - stateStartTime < 5000) {  
+        // Calculate the number of steps (each step corresponds to an increase of 0.33)
+        int steps = (millis() - stateStartTime) / (5000 / 7);  // 7 steps over 5 seconds
+        setpoints[0] = steps * 0.33;  // Increase fuel setpoint by 0.33 at each step
+        setpoints[1] = 0;  // Oxidizer remains closed during ignition
+        
+        // Update pressure readings
+        for (int i = 0; i < 6; i++) {
+          pressures[i] = analogRead(pressurePins[i]); // Read each analog pin and update pressures[]
+        }
+    
+        // Check for new commands from Serial
+        if (Serial.available()) {
+          String input = Serial.readStringUntil('\n');
+
+          if (input == "IDLE") {
+            currentState = IDLE;
+          }
+        }
+
+        // Compute PID outputs
+        pid1.Compute();
+        pid2.Compute();
+    
+        // Constrain outputs within the valid PWM range (0-255)
+        outputs[0] = constrain(outputs[0], 0, 255);
+        outputs[1] = constrain(outputs[1], 0, 255);
+
+        // Control the valves using the computed PID outputs
+        analogWrite(valvePins[0], outputs[0]);
+        analogWrite(valvePins[1], outputs[1]);
+    
+        // Create the data string to send via Serial
+        String data = "";
+        data += "DataPointCount:" + String(dataPointCount++) + ",";  // Include data point count
+        for (int i = 0; i < 6; i++) {
+          data += String(pressures[i]);
+          if (i < 5) data += ",";
+        }
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(setpoints[i]);
+        }
+        for (int i = 0; i < 2; i++) {
+          data += "," + String(outputs[i]);
+        }
+        data += "," + String(millis() - stateStartTime);  // Send elapsed time
+        Serial.println(data);  // Send data via Serial
+    
+      } else {
+        // After 5 seconds, transition to THRUSTING state
+        currentState = THRUSTING;
+      }
+    
+      break;
+
     case THRUSTING:
       // Run continuously until 1 second has passed
       if (millis() - stateStartTime < 10000) {  
@@ -233,7 +295,7 @@ void executeStateLogic() {
           if (input == "IDLE") {
             currentState = IDLE;
           }
-          else if (input.startsWith("SETPOINTS,")) {
+          else if (input.startsWith("UPDATESETPOINTS,")) {
             // Parse the received setpoints
             int commaIndex1 = input.indexOf(',', 10);  // Find first comma after "SETPOINTS,"
             if (commaIndex1 != -1) {
@@ -247,6 +309,10 @@ void executeStateLogic() {
         pid1.Compute();
         pid2.Compute();
     
+        // Constrain outputs within the valid PWM range (0-255)
+        outputs[0] = constrain(outputs[0], 0, 255);
+        outputs[1] = constrain(outputs[1], 0, 255);
+
         // Control the valves using the computed PID outputs
         analogWrite(valvePins[0], outputs[0]);
         analogWrite(valvePins[1], outputs[1]);

@@ -5,7 +5,7 @@ import pyqtgraph as pg
 import time
 import csv
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QSlider, QHBoxLayout, QTabWidget, QTextEdit, QLineEdit
-from PyQt5.QtGui import QPalette, QColor, QFont
+from PyQt5.QtGui import QPalette, QColor, QFont, QPixmap, QFont
 from PyQt5.QtCore import Qt
 import os
 from datetime import datetime
@@ -34,7 +34,8 @@ class PressureControlGUI(QWidget):
         # Setup main layout -----------------------------------------------------
 
         main_layout = QHBoxLayout()
-
+        image_path = os.path.join(os.getcwd(), "logosmall")
+        
         # Tab setup -----------------------------------------------------
 
         self.tabs = QTabWidget()
@@ -79,10 +80,22 @@ class PressureControlGUI(QWidget):
 
         self.tabs.addTab(self.menu_tab, "Menu")
 
-        self.menu_title_label = QLabel("Juppspace Test GUI")
-        self.menu_title_label.setFont(QFont(title_font))
-        self.menu_title_label.setStyleSheet("color: white;")
-        menu_layout.addWidget(self.menu_title_label)
+        # Load and display the image
+        self.logo_label = QLabel()
+        pixmap = QPixmap(image_path)
+
+        if pixmap.isNull():
+            print("Error: Could not load logo.png")
+
+        self.logo_label.setPixmap(pixmap)
+        self.logo_label.setAlignment(Qt.AlignCenter)  # Center the image
+        menu_layout.addWidget(self.logo_label)
+
+        #self.menu_title_label = QLabel("Juppspace Test GUI")
+        #self.menu_title_label.setFont(QFont(title_font))
+        #self.menu_title_label.setAlignment(Qt.AlignCenter)
+        #self.menu_title_label.setStyleSheet("color: white;")
+        #menu_layout.addWidget(self.menu_title_label)
 
         # Settings layout ------------------------------------------------------
         self.connection_tab = QWidget()
@@ -119,7 +132,7 @@ class PressureControlGUI(QWidget):
         self.tune_label.setStyleSheet("color: #ffffff;")
         connection_layout.addWidget(self.tune_label)
         
-        self.kp_label = QLabel("Kp: 1.00")
+        self.kp_label = QLabel("kp: 1.00")
         self.kp_label.setFont(font)
         self.kp_label.setStyleSheet("color: #ffffff;")
         connection_layout.addWidget(self.kp_label)
@@ -135,7 +148,7 @@ class PressureControlGUI(QWidget):
         """)
         connection_layout.addWidget(self.kp_slider)
         
-        self.ki_label = QLabel("Ki: 5.00")
+        self.ki_label = QLabel("ki: 5.00")
         self.ki_label.setFont(QFont(font))
         self.ki_label.setStyleSheet("color: #ffffff;")
         connection_layout.addWidget(self.ki_label)
@@ -151,7 +164,7 @@ class PressureControlGUI(QWidget):
         """)
         connection_layout.addWidget(self.ki_slider)
         
-        self.kd_label = QLabel("Kd: 2.00")
+        self.kd_label = QLabel("kd: 2.00")
         self.kd_label.setFont(QFont(font))
         self.kd_label.setStyleSheet("color: #ffffff;")
         connection_layout.addWidget(self.kd_label)
@@ -225,24 +238,26 @@ class PressureControlGUI(QWidget):
         self.control_output.setFont(font)
         control_layout.addWidget(self.control_output)
 
-        self.valve1_label = QLabel("Valve 1: 0.00")
+        self.valve1_label = QLabel("Valve 1: 2.31")
         self.valve1_label.setFont(QFont("Consolas", 10))
         self.valve1_label.setStyleSheet("color: #ffffff;")
         control_layout.addWidget(self.valve1_label)
 
         self.valve1_slider = QSlider(Qt.Horizontal)
         self.valve1_slider.setRange(0, 30)
+        self.valve1_slider.setValue(7)
         self.valve1_slider.valueChanged.connect(self.update_valve1) # Live value change 
         self.valve1_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
         control_layout.addWidget(self.valve1_slider)
         
-        self.valve2_label = QLabel("Valve 2: 0.00")
+        self.valve2_label = QLabel("Valve 2: 45.21")
         self.valve2_label.setFont(QFont("Consolas", 10))
         self.valve2_label.setStyleSheet("color: #ffffff;")
         control_layout.addWidget(self.valve2_label)
 
         self.valve2_slider = QSlider(Qt.Horizontal)
         self.valve2_slider.setRange(0, 240)
+        self.valve2_slider.setValue(137)
         self.valve2_slider.valueChanged.connect(self.update_valve2)  
         self.valve2_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
         control_layout.addWidget(self.valve2_slider)
@@ -253,7 +268,13 @@ class PressureControlGUI(QWidget):
         self.ignition_button.clicked.connect(self.ignition)
         self.ignition_button.setStyleSheet("background-color: #ffffff; color: #000000;")
         self.ignition_button.setFont(font)
-        control_layout.addWidget(self.ignition_button)
+        button_layout.addWidget(self.ignition_button)
+
+        self.shutdown_button = QPushButton("Shutdown")
+        self.shutdown_button.clicked.connect(self.shutdown)
+        self.shutdown_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.shutdown_button.setFont(font)
+        button_layout.addWidget(self.shutdown_button)
 
         control_layout.addLayout(button_layout)
         
@@ -357,8 +378,8 @@ class PressureControlGUI(QWidget):
         self.time = []
         self.delta_A0A1 = []
         self.delta_A2A3 = []
-        self.v1_max_delta = 70                                # CHECK THESE
-        self.v2_max_delta = 8                                 # CHECK THESE
+        self.v1_max_delta = 100                                
+        self.v2_max_delta = 17                             
     #--------------General Definitions----------------
 
     def init_serial(self):
@@ -447,7 +468,7 @@ class PressureControlGUI(QWidget):
         if self.serial_conn and self.serial_conn.is_open:
             valve1_value = self.valve1_slider.value() * 0.33
             valve2_value = self.valve2_slider.value() * 0.33
-            self.serial_conn.write(f"SETPOINTS,{valve1_value},{valve2_value}\n".encode())
+            self.serial_conn.write(f"UPDATESETPOINTS,{valve1_value},{valve2_value}\n".encode())
 
     #--------------Test Definitions----------------
 
@@ -478,22 +499,24 @@ class PressureControlGUI(QWidget):
         while True:
             response = self.read_serial_data()
             if response:
+                self.control_output.append(response)
                 #Assign variables
-                self.A0.append(float(response[0]))
-                self.A1.append(float(response[1]))
-                self.A2.append(float(response[2]))
-                self.A3.append(float(response[3]))
-                self.A4.append(float(response[4]))
-                self.A5.append(float(response[5]))
-                self.v1_setpoint.append(float(response[6]))
-                self.v2_setpoint.append(float(response[7]))
-                self.v1_output.append(float(response[8]))
-                self.v2_output.append(float(response[9]))
-                self.time.append(float(response[10]))
+                self.datapointcount.append(float(response[0]))
+                self.A0.append(float(response[1]))
+                self.A1.append(float(response[2]))
+                self.A2.append(float(response[3]))
+                self.A3.append(float(response[4]))
+                self.A4.append(float(response[5]))
+                self.A5.append(float(response[6]))
+                self.v1_setpoint.append(float(response[7]))
+                self.v2_setpoint.append(float(response[8]))
+                self.v1_output.append(float(response[9]))
+                self.v2_output.append(float(response[10]))
+                self.time.append(float(response[11]))
 
                 # Append deltas directly to the lists
-                self.delta_A0A1.append(float(response[0]) - float(response[1]))  # A0 - A1
-                self.delta_A2A3.append(float(response[2]) - float(response[3]))  # A2 - A3
+                self.delta_A0A1.append(float(response[1]) - float(response[2]))  # A0 - A1
+                self.delta_A2A3.append(float(response[3]) - float(response[4]))  # A2 - A3
 
                 # Write to terminal
                 self.connection_output.append("Testing...")
@@ -535,22 +558,26 @@ class PressureControlGUI(QWidget):
         while True:
             response = self.read_serial_data()
             if response:
+                self.control_output.append(response)
                 #Assign variables
-                self.A0.append(float(response[0]))
-                self.A1.append(float(response[1]))
-                self.A2.append(float(response[2]))
-                self.A3.append(float(response[3]))
-                self.A4.append(float(response[4]))
-                self.A5.append(float(response[5]))
-                self.v1_setpoint.append(float(response[6]))
-                self.v2_setpoint.append(float(response[7]))
-                self.v1_output.append(float(response[8]))
-                self.v2_output.append(float(response[9]))
-                self.time.append(float(response[10]))
+                self.datapointcount.append(float(response[0]))
+                self.A0.append(float(response[1]))
+                self.A1.append(float(response[2]))
+                self.A2.append(float(response[3]))
+                self.A3.append(float(response[4]))
+                self.A4.append(float(response[5]))
+                self.A5.append(float(response[6]))
+                self.v1_setpoint.append(float(response[7]))
+                self.v2_setpoint.append(float(response[8]))
+                self.v1_output.append(float(response[9]))
+                self.v2_output.append(float(response[10]))
+                self.time.append(float(response[11]))
 
                 # Append deltas directly to the lists
-                self.delta_A0A1.append(float(response[0]) - float(response[1]))  # A0 - A1
-                self.delta_A2A3.append(float(response[2]) - float(response[3]))  # A2 - A3
+                self.delta_A0A1.append(float(response[1]) - float(response[2]))  # A0 - A1
+                self.delta_A2A3.append(float(response[3]) - float(response[4]))  # A2 - A3
+
+                # Valve deltaP limits safety check
                 if self.delta_A0A1[-1] > self.v1_max_delta or self.delta_A2A3 > self.v2_max_delta:
                     self.send_command("IDLE")
 
@@ -592,6 +619,14 @@ class PressureControlGUI(QWidget):
 
             # Allow UI to update to prevent freezing
             QApplication.processEvents()
+
+    def shutdown(self):
+        self.send_command("IDLE")
+        self.control_output.append("Forced System Shutdown...")
+        response = self.read_serial_data()
+        self.control_output.append(response)
+        self.save_data()
+        self.control_output.append("Data saved to working directory.")
 
     def closeEvent(self, event):
         self.running = False
