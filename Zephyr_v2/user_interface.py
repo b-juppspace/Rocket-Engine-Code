@@ -91,11 +91,17 @@ class PressureControlGUI(QWidget):
         self.logo_label.setAlignment(Qt.AlignCenter)  # Center the image
         menu_layout.addWidget(self.logo_label)
 
-        #self.menu_title_label = QLabel("Juppspace Test GUI")
-        #self.menu_title_label.setFont(QFont(title_font))
-        #self.menu_title_label.setAlignment(Qt.AlignCenter)
-        #self.menu_title_label.setStyleSheet("color: white;")
-        #menu_layout.addWidget(self.menu_title_label)
+        self.menu_title_label = QLabel("Juppspace Test GUI")
+        self.menu_title_label.setFont(QFont(title_font))
+        self.menu_title_label.setAlignment(Qt.AlignCenter)
+        self.menu_title_label.setStyleSheet("color: white;")
+        menu_layout.addWidget(self.menu_title_label)
+
+        self.menu_text_label = QLabel("Script for rocket engine test purposes.")
+        self.menu_text_label.setFont(QFont(font))
+        self.menu_text_label.setAlignment(Qt.AlignCenter)
+        self.menu_text_label.setStyleSheet("color: white;")
+        menu_layout.addWidget(self.menu_text_label)
 
         # Settings layout ------------------------------------------------------
         self.connection_tab = QWidget()
@@ -132,10 +138,14 @@ class PressureControlGUI(QWidget):
         self.tune_label.setStyleSheet("color: #ffffff;")
         connection_layout.addWidget(self.tune_label)
         
+        # ------------------------------sliders---------------------------
+        slider_layout = QHBoxLayout()
+        slider_v1_section = QVBoxLayout()
+
         self.kp_label = QLabel("kp: 1.00")
         self.kp_label.setFont(font)
         self.kp_label.setStyleSheet("color: #ffffff;")
-        connection_layout.addWidget(self.kp_label)
+        slider_v1_section.addWidget(self.kp_label)
 
         self.kp_slider = QSlider(Qt.Horizontal)
         self.kp_slider.setRange(0, 80)
@@ -146,12 +156,12 @@ class PressureControlGUI(QWidget):
                 background: #ffffff;
             }
         """)
-        connection_layout.addWidget(self.kp_slider)
+        slider_v1_section.addWidget(self.kp_slider)
         
         self.ki_label = QLabel("ki: 5.00")
         self.ki_label.setFont(QFont(font))
         self.ki_label.setStyleSheet("color: #ffffff;")
-        connection_layout.addWidget(self.ki_label)
+        slider_v1_section.addWidget(self.ki_label)
 
         self.ki_slider = QSlider(Qt.Horizontal)
         self.ki_slider.setRange(0, 80)
@@ -162,12 +172,12 @@ class PressureControlGUI(QWidget):
                 background: #ffffff;
             }
         """)
-        connection_layout.addWidget(self.ki_slider)
+        slider_v1_section.addWidget(self.ki_slider)
         
         self.kd_label = QLabel("kd: 2.00")
         self.kd_label.setFont(QFont(font))
         self.kd_label.setStyleSheet("color: #ffffff;")
-        connection_layout.addWidget(self.kd_label)
+        slider_v1_section.addWidget(self.kd_label)
 
         self.kd_slider = QSlider(Qt.Horizontal)
         self.kd_slider.setRange(0, 80)
@@ -178,8 +188,65 @@ class PressureControlGUI(QWidget):
                 background: #ffffff;
             }
         """)
-        connection_layout.addWidget(self.kd_slider)
+        slider_v1_section.addWidget(self.kd_slider)
+
+
+        slider_v2_section = QVBoxLayout()
+
+        self.kp2_label = QLabel("kp: 1.00")
+        self.kp2_label.setFont(font)
+        self.kp2_label.setStyleSheet("color: #ffffff;")
+        slider_v2_section.addWidget(self.kp2_label)
+
+        self.kp2_slider = QSlider(Qt.Horizontal)
+        self.kp2_slider.setRange(0, 80)
+        self.kp2_slider.setValue(10)
+        self.kp2_slider.valueChanged.connect(self.update_kp2)
+        self.kp2_slider.setStyleSheet("""
+            QSlider::handle:horizontal {
+                background: #ffffff;
+            }
+        """)
+        slider_v2_section.addWidget(self.kp2_slider)
         
+        self.ki2_label = QLabel("ki: 5.00")
+        self.ki2_label.setFont(QFont(font))
+        self.ki2_label.setStyleSheet("color: #ffffff;")
+        slider_v2_section.addWidget(self.ki2_label)
+
+        self.ki2_slider = QSlider(Qt.Horizontal)
+        self.ki2_slider.setRange(0, 80)
+        self.ki2_slider.setValue(50)
+        self.ki2_slider.valueChanged.connect(self.update_ki2)
+        self.ki2_slider.setStyleSheet("""
+            QSlider::handle:horizontal {
+                background: #ffffff;
+            }
+        """)
+        slider_v2_section.addWidget(self.ki2_slider)
+        
+        self.kd2_label = QLabel("kd: 2.00")
+        self.kd2_label.setFont(QFont(font))
+        self.kd2_label.setStyleSheet("color: #ffffff;")
+        slider_v2_section.addWidget(self.kd2_label)
+
+        self.kd2_slider = QSlider(Qt.Horizontal)
+        self.kd2_slider.setRange(0, 80)
+        self.kd2_slider.setValue(20)
+        self.kd2_slider.valueChanged.connect(self.update_kd2)
+        self.kd2_slider.setStyleSheet("""
+            QSlider::handle:horizontal {
+                background: #ffffff;
+            }
+        """)
+        slider_v2_section.addWidget(self.kd2_slider)
+
+
+        slider_layout.addLayout(slider_v1_section)
+        slider_layout.addLayout(slider_v2_section)
+        connection_layout.addLayout(slider_layout)
+
+
         self.send_k_button = QPushButton("Send K Values")
         self.send_k_button.clicked.connect(self.send_k_values_connection)
         self.send_k_button.setStyleSheet("background-color: #ffffff; color: #000000;")
@@ -433,6 +500,18 @@ class PressureControlGUI(QWidget):
         value = self.kd_slider.value() * 0.1
         self.kd_label.setText(f"kd: {value:.2f}")
 
+    def update_kp2(self):
+        value = self.kp2_slider.value() * 0.1
+        self.kp2_label.setText(f"kp: {value:.2f}")
+
+    def update_ki2(self):
+        value = self.ki2_slider.value() * 0.1
+        self.ki2_label.setText(f"ki: {value:.2f}")
+
+    def update_kd2(self):
+        value = self.kd2_slider.value() * 0.1
+        self.kd2_label.setText(f"kd: {value:.2f}")
+
     def send_k_values_connection(self):
         self.send_command("UPDATE_K_VALUES")
 
@@ -447,7 +526,10 @@ class PressureControlGUI(QWidget):
         kp_value = self.kp_slider.value() * 0.1
         ki_value = self.ki_slider.value() * 0.1
         kd_value = self.kd_slider.value() * 0.1
-        self.send_command(f"{kp_value},{ki_value},{kd_value}")
+        kp2_value = self.kp2_slider.value() * 0.1
+        ki2_value = self.ki2_slider.value() * 0.1
+        kd2_value = self.kd2_slider.value() * 0.1
+        self.send_command(f"{kp_value},{ki_value},{kd_value},{kp2_value}, {ki2_value}, {kd2_value}")
 
         response = self.read_serial_data()
         self.connection_output.append(response)
@@ -478,16 +560,15 @@ class PressureControlGUI(QWidget):
         
         while True:
             response = self.read_serial_data()
-            if response:
-                # Append the response to the QTextEdit widget
-                self.connection_output.append(response)
 
-                # Check if response is 'IDLE'
-                if response == "IDLE":
-                    self.connection_output.append("Test completed. Returning to idle & saving data.")
-                    self.save_data()
-                    self.connection_output.append("Data saved to working directory.")
-                    break
+            if response == "IDLE":
+                                self.connection_output.append("Test completed. Returning to idle & saving data.")
+                                self.save_data()
+                                self.connection_output.append("Data saved to working directory.")
+                                break
+
+            else:
+                self.connection_output.append(response)
 
             # Allow UI to update to prevent freezing
             QApplication.processEvents()
@@ -498,9 +579,19 @@ class PressureControlGUI(QWidget):
 
         while True:
             response = self.read_serial_data()
-            if response:
+
+            if response == "IDLE":
+                    self.connection_output.append("IDLE")
+                    self.save_data()
+                    self.connection_output.append("Data saved to working directory.")
+                    break
+            
+            elif response == "PID_DONE":
+                 self.connection_output.append("Test completed.")
+
+            else:
                 self.control_output.append(response)
-                #Assign variables
+
                 self.datapointcount.append(float(response[0]))
                 self.A0.append(float(response[1]))
                 self.A1.append(float(response[2]))
@@ -514,11 +605,9 @@ class PressureControlGUI(QWidget):
                 self.v2_output.append(float(response[10]))
                 self.time.append(float(response[11]))
 
-                # Append deltas directly to the lists
                 self.delta_A0A1.append(float(response[1]) - float(response[2]))  # A0 - A1
                 self.delta_A2A3.append(float(response[3]) - float(response[4]))  # A2 - A3
 
-                # Write to terminal
                 self.connection_output.append("Testing...")
 
                 # Append the response to graphs
@@ -540,14 +629,6 @@ class PressureControlGUI(QWidget):
                 self.graph_delta_A2A3.plot(self.time, self.delta_A2A3, pen=pg.mkPen(color="#ffffff"), name="Delta A2/A3")
                 self.graph_delta_A2A3.plot(self.time, [self.v2_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Delta A0/A1")
 
-
-                # Check if response is 'IDLE'
-                if response == "IDLE":
-                    self.connection_output.append("Test completed. Returning to idle & saving data.")
-                    self.save_data()
-                    self.connection_output.append("Data saved to working directory.")
-                    break
-
             # Allow UI to update to prevent freezing
             QApplication.processEvents()
 
@@ -557,9 +638,23 @@ class PressureControlGUI(QWidget):
 
         while True:
             response = self.read_serial_data()
-            if response:
-                self.control_output.append(response)
-                #Assign variables
+
+            if response == "IDLE":
+                    self.control_output.append("Test completed. Returning to idle & saving data.")
+                    self.save_data()
+                    self.control_output.append("Data saved to working directory.")
+                    break
+            
+            elif response == "IGNITION":
+                    self.control_output.append("Ignition state commenced.")
+
+            elif response == "THRUSTING":
+                    self.control_output.append("Thrusting state commenced.")
+
+            elif response == "COOLING":
+                    self.control_output.append("Cooling state commenced")
+
+            else:
                 self.datapointcount.append(float(response[0]))
                 self.A0.append(float(response[1]))
                 self.A1.append(float(response[2]))
@@ -573,15 +668,14 @@ class PressureControlGUI(QWidget):
                 self.v2_output.append(float(response[10]))
                 self.time.append(float(response[11]))
 
-                # Append deltas directly to the lists
+                
                 self.delta_A0A1.append(float(response[1]) - float(response[2]))  # A0 - A1
                 self.delta_A2A3.append(float(response[3]) - float(response[4]))  # A2 - A3
 
                 # Valve deltaP limits safety check
-                if self.delta_A0A1[-1] > self.v1_max_delta or self.delta_A2A3 > self.v2_max_delta:
+                if self.delta_A0A1[-1] > self.v1_max_delta or self.delta_A2A3[-1] > self.v2_max_delta:
                     self.send_command("IDLE")
 
-                # Write to terminal
                 self.control_output.append("Testing...")
 
                 # Append the response to graphs
@@ -608,14 +702,6 @@ class PressureControlGUI(QWidget):
                 # Plot for delta values for health checks: A2-A3, Max_delta vs Time
                 self.graph_delta_A2A3.plot(self.time, self.delta_A2A3, pen=pg.mkPen(color="#ffffff"), name="Delta A2/A3")
                 self.graph_delta_A2A3.plot(self.time, [self.v2_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Delta A0/A1")
-
-
-                # Check if response is 'IDLE'
-                if response == "IDLE":
-                    self.control_output.append("Test completed. Returning to idle & saving data.")
-                    self.save_data()
-                    self.control_output.append("Data saved to working directory.")
-                    break
 
             # Allow UI to update to prevent freezing
             QApplication.processEvents()
