@@ -4,667 +4,1070 @@ import threading
 import pyqtgraph as pg
 import time
 import csv
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout,
-    QTabWidget, QTextEdit, QLineEdit, QComboBox, QSlider
-)
-from PyQt5.QtGui import QFont, QPixmap
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QFileDialog, QSlider, QHBoxLayout, QTabWidget, QTextEdit, QLineEdit
+from PyQt5.QtGui import QPalette, QColor, QFont, QPixmap, QFont
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from datetime import datetime
-import serial.tools.list_ports
 import os
+from datetime import datetime
+import numpy as np
+from scipy.optimize import curve_fit
 
 class SerialThread(QThread):
-    data_received = pyqtSignal(list)
-    message_received = pyqtSignal(str)
+    data_received = pyqtSignal(list)  # Signal to emit received data
+    status_update = pyqtSignal(str)   # Signal for status messages
 
     def __init__(self, serial_conn):
         super().__init__()
         self.serial_conn = serial_conn
-        self.running = True
+        self.running = False
 
     def run(self):
-        while self.running and self.serial_conn.is_open:
-            if self.serial_conn.in_waiting:
-                try:
+        self.running = True
+        while self.running and self.serial_conn and self.serial_conn.is_open:
+            try:
+                if self.serial_conn.in_waiting > 0:
                     line = self.serial_conn.readline().decode().strip()
-                    if "," in line:
+                    if line:
                         data = line.split(",")
                         self.data_received.emit(data)
-                    else:
-                        self.message_received.emit(line)
-                except Exception as e:
-                    self.message_received.emit(f"Serial Error: {e}")
-            time.sleep(0.01)
+            except Exception as e:
+                self.status_update.emit(f"Serial error: {e}")
+            time.sleep(0.01)  # Small delay to prevent CPU hogging
 
     def stop(self):
         self.running = False
+        self.wait()
 
 class PressureControlGUI(QWidget):
     def __init__(self):
         super().__init__()
         self.serial_conn = None
         self.serial_thread = None
-        self.data = {
-            "dataPointCount": [], "V0": [], "V1": [], "V2": [], "V3": [], "V4": [], "V5": [],
-            "P0": [], "P1": [], "P2": [], "P3": [], "P4": [], "P5": [],
-            "dP0": [], "dP1": [], "SV0": [], "SV1": [], "SP0": [], "SP1": [], "OP0": [], "OP1": [], "time": []
-        }
-        self.plot_lines = {}
+        self.running = False
+        self.Q_REF = 90.0
+        self.DP_REF = 500.0
+        self.R_GAS = 259.8
+        self.TEMP = 298.0
         self.initUI()
-        self.setup_plots()
-
+        self.variables()  
+    
     def initUI(self):
         self.setWindowTitle("Command Centre")
         self.setFixedSize(1400, 900)
 
+        # GUI Formatting
         font = QFont("Consolas", 10)
         small_font = QFont("Consolas", 8)
         header_font = QFont("Consolas", 12, QFont.Bold)
         title_font = QFont("Consolas", 16, QFont.Bold)
         self.setFont(font)
         graph_label = "<span style='font-size:10pt; font-weight:bold; color:white; font-family:Consolas;'>{}</span>"
-
-        main_layout = QHBoxLayout()
-        image_path = os.path.join(os.getcwd(), "logosmall")
-
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
             QTabWidget {
-                background-color: #000000 !important;
+                background-color: #000000 !important;  /* Ensure tab widget background is black */
                 color: #ffffff;
                 border: none;
             }
+
             QTabWidget::pane {
-                background-color: #000000 !important;
+                background-color: #000000 !important;  /* Ensure the content area background is also black */
                 border: none;
             }
+
             QTabBar::tab {
                 background-color: #ffffff;
                 color: #000000;
                 height: 30px;
                 width: 140px;
                 padding: 5px;
-                border: 1px solid #1e1e2e;
+                border: 1px solid #1e1e2e; /* optional border around each tab */
             }
+            
             QTabBar::tab:selected {
                 background-color: #000000;
                 color: #ffffff;
             }
+
             QTabBar::tab:hover {
                 background-color: #e9e9e9;
                 color: #000000;
             }
         """)
         self.tabs.setFont(font)
+        
+        # Setup main layout -----------------------------------------------------
+        main_layout = QHBoxLayout()
+        image_path = os.path.join(os.getcwd(), "logosmall")
 
-        # Menu Tab
-        menu_tab = QWidget()
-        menu_layout = QVBoxLayout(menu_tab)
-        menu_tab.setFont(font)
-
-        logo_label = QLabel()
+        # Label Setup and Formatting --------------------------------------------
+        self.logo_label = QLabel()
         pixmap = QPixmap(image_path)
         if pixmap.isNull():
             print("Error: Could not load logo.png")
-        logo_label.setPixmap(pixmap)
-        logo_label.setAlignment(Qt.AlignCenter)
-        menu_layout.addWidget(logo_label)
+        self.logo_label.setPixmap(pixmap)
+        self.logo_label.setAlignment(Qt.AlignCenter)
 
-        menu_title_label = QLabel("Juppspace Test GUI")
-        menu_title_label.setFont(title_font)
-        menu_title_label.setAlignment(Qt.AlignCenter)
-        menu_title_label.setStyleSheet("color: white;")
-        menu_layout.addWidget(menu_title_label)
+        self.menu_title_label = QLabel("Juppspace Test GUI")
+        self.menu_title_label.setFont(QFont(title_font))
+        self.menu_title_label.setAlignment(Qt.AlignCenter)
+        self.menu_title_label.setStyleSheet("color: white;")
 
-        menu_text_label = QLabel("Script for rocket engine test purposes.")
-        menu_text_label.setFont(font)
-        menu_text_label.setAlignment(Qt.AlignCenter)
-        menu_text_label.setStyleSheet("color: white;")
-        menu_layout.addWidget(menu_text_label)
+        self.menu_text_label = QLabel("Script for rocket engine test purposes.")
+        self.menu_text_label.setFont(QFont(font))
+        self.menu_text_label.setAlignment(Qt.AlignCenter)
+        self.menu_text_label.setStyleSheet("color: white;")
 
-        self.tabs.addTab(menu_tab, "Menu")
+        self.connection_title_label = QLabel("Terminal")
+        self.connection_title_label.setFont(QFont(header_font))
+        self.connection_title_label.setStyleSheet("color: white;")
 
-        # Settings Tab
-        settings_tab = QWidget()
-        settings_layout = QVBoxLayout(settings_tab)
-        settings_tab.setFont(font)
+        self.tune_label = QLabel("Tune PID K-Values")
+        self.tune_label.setFont(header_font)
+        self.tune_label.setStyleSheet("color: #ffffff;")
 
-        settings_title_label = QLabel("Terminal")
-        settings_title_label.setFont(header_font)
-        settings_title_label.setStyleSheet("color: white;")
-        settings_layout.addWidget(settings_title_label)
+        self.kp_label = QLabel("kp: 1.00")
+        self.kp_label.setFont(font)
+        self.kp_label.setStyleSheet("color: #ffffff;")
 
-        self.settings_output = QTextEdit()
-        self.settings_output.setReadOnly(True)
-        self.settings_output.setStyleSheet("background-color: #000000; color: #ffffff;")
-        self.settings_output.setFont(font)
-        settings_layout.addWidget(self.settings_output)
+        self.ki_label = QLabel("ki: 5.00")
+        self.ki_label.setFont(QFont(font))
+        self.ki_label.setStyleSheet("color: #ffffff;")
 
-        # Serial Port Selection
-        port_layout = QVBoxLayout()
-        port_layout.addWidget(QLabel("Select Port:", styleSheet="color: #ffffff;"))
-        self.port_combo = QComboBox()
-        self.port_combo.currentTextChanged.connect(self.update_serial)
-        port_layout.addWidget(self.port_combo)
-        settings_layout.addLayout(port_layout)
+        self.kd_label = QLabel("kd: 2.00")
+        self.kd_label.setFont(QFont(font))
+        self.kd_label.setStyleSheet("color: #ffffff;")
 
-        init_serial_button = QPushButton("Initialize Serial Port")
-        init_serial_button.clicked.connect(self.init_serial)
-        init_serial_button.setStyleSheet("background-color: #ffffff; color: #000000;")
-        init_serial_button.setFont(font)
-        settings_layout.addWidget(init_serial_button)
+        self.kp2_label = QLabel("kp: 1.00")
+        self.kp2_label.setFont(font)
+        self.kp2_label.setStyleSheet("color: #ffffff;")
 
-        test_connection_button = QPushButton("Test Connection")
-        test_connection_button.clicked.connect(self.test_connection)
-        test_connection_button.setStyleSheet("background-color: #ffffff; color: #000000;")
-        test_connection_button.setFont(font)
-        settings_layout.addWidget(test_connection_button)
+        self.ki2_label = QLabel("ki: 5.00")
+        self.ki2_label.setFont(QFont(font))
+        self.ki2_label.setStyleSheet("color: #ffffff;")
 
-        tune_label = QLabel("Tune PID K-Values")
-        tune_label.setFont(header_font)
-        tune_label.setStyleSheet("color: #ffffff;")
-        settings_layout.addWidget(tune_label)
+        self.kd2_label = QLabel("kd: 2.00")
+        self.kd2_label.setFont(QFont(font))
+        self.kd2_label.setStyleSheet("color: #ffffff;")
 
-        slider_layout = QHBoxLayout()
-        for prefix, max_dp in [("V1", 120), ("V2", 700)]:  # V1: Fuel, V2: Oxidizer
-            slider_section = QVBoxLayout()
-            for param in [("kp", "kp: 1.00"), ("ki", "ki: 5.00"), ("kd", "kd: 2.00")]:
-                lbl = QLabel(param[1], styleSheet="color: #ffffff;")
-                slider = QSlider(Qt.Horizontal, minimum=0, maximum=80, value=10 if param[0] == "kp" else 50 if param[0] == "ki" else 20)
-                slider.valueChanged.connect(lambda v, p=param[0], l=lbl, pr=prefix: l.setText(f"{p}: {v * 0.1:.2f}"))
-                slider.setStyleSheet("QSlider::handle:horizontal { background: #ffffff; }")
-                setattr(self, f"{param[0]}{prefix}_label", lbl)
-                setattr(self, f"{param[0]}{prefix}_slider", slider)
-                slider_section.addWidget(lbl)
-                slider_section.addWidget(slider)
-            slider_layout.addLayout(slider_section)
-        settings_layout.addLayout(slider_layout)
+        self.note_label = QLabel("Note: Open valves to complete PID tuning tests. Valve will open to provide pressure of 45psi for ox and 2 psi for fuel, edit K values for tuning of response.")
+        self.note_label.setWordWrap(True)
+        self.note_label.setStyleSheet("background-color: #000000; color: #ffffff;")
+        self.note_label.setFont(small_font)
 
-        send_k_button = QPushButton("Send K Values")
-        send_k_button.clicked.connect(self.send_k_values)
-        send_k_button.setStyleSheet("background-color: #ffffff; color: #000000;")
-        send_k_button.setFont(font)
-        settings_layout.addWidget(send_k_button)
+        self.oxtest_title_label = QLabel("Terminal")
+        self.oxtest_title_label.setFont(QFont(header_font))
+        self.oxtest_title_label.setStyleSheet("color: white;")
 
-        note_label = QLabel("Note: Open valves to complete PID tuning tests. Valve 1 will target 10 kPa (fuel), Valve 2 will target 300 kPa (oxidizer). Edit K values for tuning response.")
-        note_label.setWordWrap(True)
-        note_label.setStyleSheet("background-color: #000000; color: #ffffff;")
-        note_label.setFont(small_font)
-        settings_layout.addWidget(note_label)
+        self.control_title_label2 = QLabel("Terminal")
+        self.control_title_label2.setFont(QFont(header_font))
+        self.control_title_label2.setStyleSheet("color: white;")
+        
+        self.valve1_label = QLabel("Valve 1: 2.31 kPa")
+        self.valve1_label.setFont(QFont("Consolas", 10))
+        self.valve1_label.setStyleSheet("color: #ffffff;")
 
-        pid_tune_test_button = QPushButton("Begin PID Tune Test")
-        pid_tune_test_button.clicked.connect(self.pid_tune_test)
-        pid_tune_test_button.setStyleSheet("background-color: #ffffff; color: #000000;")
-        pid_tune_test_button.setFont(font)
-        settings_layout.addWidget(pid_tune_test_button)
+        self.valve2_label = QLabel("Valve 2: 45.21 kPa")
+        self.valve2_label.setFont(QFont("Consolas", 10))
+        self.valve2_label.setStyleSheet("color: #ffffff;")
 
-        # Calibration Tab
-        cal_tab = QWidget()
-        cal_layout = QVBoxLayout(cal_tab)
-        cal_tab.setFont(font)
+        # Slider Setup and Formatting -------------------------------------------
+        self.kp_slider = QSlider(Qt.Horizontal)
+        self.kp_slider.setRange(0, 80)
+        self.kp_slider.setValue(10)
+        self.kp_slider.valueChanged.connect(self.update_kp)
+        self.kp_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
 
-        cal_title_label = QLabel("Calibration Settings", font=header_font, styleSheet="color: white;")
-        cal_layout.addWidget(cal_title_label)
+        self.ki_slider = QSlider(Qt.Horizontal)
+        self.ki_slider.setRange(0, 80)
+        self.ki_slider.setValue(50)
+        self.ki_slider.valueChanged.connect(self.update_ki)
+        self.ki_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
 
-        cal_fields = [
-            ("V_MIN (V at 0 kPa)", "0.5", "v_min_edit"),
-            ("V_MAX (V at 2068 kPa)", "4.5", "v_max_edit"),
-            ("P_MIN (kPa)", "0.0", "p_min_edit"),
-            ("P_MAX (kPa)", "2068.0", "p_max_edit"),
-            ("V_REF (Reference V)", "5.0", "v_ref_edit")
-        ]
-        for label, default, attr in cal_fields:
-            h_layout = QHBoxLayout()
-            h_layout.addWidget(QLabel(label, styleSheet="color: #ffffff;"))
-            edit = QLineEdit(default, styleSheet="background-color: #ffffff; color: #000000;")
-            setattr(self, attr, edit)
-            h_layout.addWidget(edit)
-            cal_layout.addLayout(h_layout)
+        self.kd_slider = QSlider(Qt.Horizontal)
+        self.kd_slider.setRange(0, 80)
+        self.kd_slider.setValue(20)
+        self.kd_slider.valueChanged.connect(self.update_kd)
+        self.kd_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
 
-        send_cal_button = QPushButton("Update Calibration", styleSheet="background-color: #ffffff; color: #000000;", clicked=self.send_calibration)
-        send_cal_button.setFont(font)
-        cal_layout.addWidget(send_cal_button)
-        cal_layout.addStretch()
-        self.tabs.addTab(cal_tab, "Calibration")
+        self.kp2_slider = QSlider(Qt.Horizontal)
+        self.kp2_slider.setRange(0, 80)
+        self.kp2_slider.setValue(10)
+        self.kp2_slider.valueChanged.connect(self.update_kp2)
+        self.kp2_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
 
-        graph_layout = QHBoxLayout()
-        self.graph_V1_PID = pg.PlotWidget(title=graph_label.format("Valve 1"))
-        self.graph_V1_PID.setLabel('left', graph_label.format("P (kPa)"))
+        self.ki2_slider = QSlider(Qt.Horizontal)
+        self.ki2_slider.setRange(0, 80)
+        self.ki2_slider.setValue(50)
+        self.ki2_slider.valueChanged.connect(self.update_ki2)
+        self.ki2_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
+
+        self.kd2_slider = QSlider(Qt.Horizontal)
+        self.kd2_slider.setRange(0, 80)
+        self.kd2_slider.setValue(20)
+        self.kd2_slider.valueChanged.connect(self.update_kd2)
+        self.kd2_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
+
+        self.valve1_slider = QSlider(Qt.Horizontal)
+        self.valve1_slider.setRange(0, 30)
+        self.valve1_slider.setValue(7)
+        self.valve1_slider.valueChanged.connect(self.update_fuel_PV)
+        self.valve1_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
+
+        self.valve2_slider = QSlider(Qt.Horizontal)
+        self.valve2_slider.setRange(0, 240)
+        self.valve2_slider.setValue(137)
+        self.valve2_slider.valueChanged.connect(self.update_ox_PV)
+        self.valve2_slider.setStyleSheet("QSlider::handle:horizontal {background: #ffffff;}")
+
+        # Button Setup and Formatting -------------------------------------------
+        self.init_serial_button = QPushButton("Initialize Serial Port")
+        self.init_serial_button.clicked.connect(self.init_serial)
+        self.init_serial_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.init_serial_button.setFont(font)
+
+        self.test_connection_button = QPushButton("Test Connection")
+        self.test_connection_button.clicked.connect(self.test_connection)
+        self.test_connection_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.test_connection_button.setFont(font)
+
+        self.send_k_button = QPushButton("Send K Values")
+        self.send_k_button.clicked.connect(self.send_k_values_connection)
+        self.send_k_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.send_k_button.setFont(font)
+
+        self.pid_tune_test_button = QPushButton("Begin PID Tune Test")
+        self.pid_tune_test_button.clicked.connect(self.pid_tune_test_connection)
+        self.pid_tune_test_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.pid_tune_test_button.setFont(font)
+
+        self.ox_test_button = QPushButton("Begin Ox Test")
+        self.ox_test_button.clicked.connect(self.pid_tune_test_connection)
+        self.ox_test_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.ox_test_button.setFont(font)
+
+        self.initialise_ox_test_button = QPushButton("Initialise Ox Test")
+        self.initialise_ox_test_button.clicked.connect(self.oxtest)
+        self.initialise_ox_test_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.initialise_ox_test_button.setFont(font)
+
+        self.end_ox_test_button = QPushButton("Finish Ox Test")
+        self.end_ox_test_button.clicked.connect(self.end_oxtest)
+        self.end_ox_test_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.end_ox_test_button.setFont(font)
+
+        self.ignition_button = QPushButton("Ignition")
+        self.ignition_button.clicked.connect(self.ignition)
+        self.ignition_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.ignition_button.setFont(font)
+
+        self.shutdown_button = QPushButton("Forced Shutdown")
+        self.shutdown_button.clicked.connect(self.shutdown)
+        self.shutdown_button.setStyleSheet("background-color: #ffffff; color: #000000;")
+        self.shutdown_button.setFont(font)
+
+        # Terminal -------------------------------------
+        self.connection_output = QTextEdit()
+        self.connection_output.setReadOnly(True)
+        self.connection_output.setStyleSheet("background-color: #000000; color: #ffffff;")
+        self.connection_output.setFont(font)
+
+        self.oxtest_output = QTextEdit()
+        self.oxtest_output.setReadOnly(True)
+        self.oxtest_output.setStyleSheet("background-color: #000000; color: #ffffff;")
+        self.oxtest_output.setFont(font)
+
+        self.control_output = QTextEdit()
+        self.control_output.setReadOnly(True)
+        self.control_output.setStyleSheet("background-color: #000000; color: #ffffff;")
+        self.control_output.setFont(font)
+
+        # Graphs -------------------------------------
+
+        self.graph_V1_PID = pg.PlotWidget()
+        self.graph_V1_PID.setTitle(graph_label.format("Valve 1"))
+        self.graph_V1_PID.setLabel('left', graph_label.format("P (psi)"))
         self.graph_V1_PID.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_V1_PID.getAxis('left').setStyle(tickFont=font)
         self.graph_V1_PID.getAxis('bottom').setStyle(tickFont=font)
-        graph_layout.addWidget(self.graph_V1_PID)
 
-        self.graph_V2_PID = pg.PlotWidget(title=graph_label.format("Valve 2"))
-        self.graph_V2_PID.setLabel('left', graph_label.format("P (kPa)"))
+        self.graph_V2_PID = pg.PlotWidget()
+        self.graph_V2_PID.setTitle(graph_label.format("Valve 2"))
+        self.graph_V2_PID.setLabel('left', graph_label.format("P (psi)"))
         self.graph_V2_PID.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_V2_PID.getAxis('left').setStyle(tickFont=font)
         self.graph_V2_PID.getAxis('bottom').setStyle(tickFont=font)
-        graph_layout.addWidget(self.graph_V2_PID)
-        settings_layout.addLayout(graph_layout)
 
-        self.tabs.addTab(settings_tab, "Settings")
+        self.graph_oxtest_voltage = pg.PlotWidget()
+        self.graph_oxtest_voltage.setTitle(graph_label.format("Ox Feed-line Transducer Voltage"))
+        self.graph_oxtest_voltage.setLabel('left', graph_label.format("V (volts)"))
+        self.graph_oxtest_voltage.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_voltage.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_voltage.getAxis('bottom').setStyle(tickFont=font)
 
-        # Play Tab
-        play_tab = QWidget()
-        play_layout = QVBoxLayout(play_tab)
-        play_tab.setFont(font)
+        self.graph_oxtest_pressure = pg.PlotWidget()
+        self.graph_oxtest_pressure.setTitle(graph_label.format("Ox Feed-line Pressure"))
+        self.graph_oxtest_pressure.setLabel('left', graph_label.format("P (kPa)"))
+        self.graph_oxtest_pressure.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_pressure.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_pressure.getAxis('bottom').setStyle(tickFont=font)
 
-        play_title_label = QLabel("Terminal")
-        play_title_label.setFont(header_font)
-        play_title_label.setStyleSheet("color: white;")
-        play_layout.addWidget(play_title_label)
+        self.graph_oxtest_deltaP = pg.PlotWidget()
+        self.graph_oxtest_deltaP.setTitle(graph_label.format("Ox Feed-line Delta Pressure"))
+        self.graph_oxtest_deltaP.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_oxtest_deltaP.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_deltaP.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_deltaP.getAxis('bottom').setStyle(tickFont=font)
 
-        self.play_output = QTextEdit()
-        self.play_output.setReadOnly(True)
-        self.play_output.setStyleSheet("background-color: #000000; color: #ffffff;")
-        self.play_output.setFont(font)
-        play_layout.addWidget(self.play_output)
+        self.graph_oxtest_sv = pg.PlotWidget()
+        self.graph_oxtest_sv.setTitle(graph_label.format("Solenoid Valve (OFF=0 ON=1)"))
+        self.graph_oxtest_sv.setLabel('left', graph_label.format("SV"))
+        self.graph_oxtest_sv.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_sv.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_sv.getAxis('bottom').setStyle(tickFont=font) 
 
-        for i, (label_text, max_val, default) in enumerate([
-            ("Valve 1 (Fuel): 15 kPa", 120, 15),  
-            ("Valve 2 (Oxidizer): 300 kPa", 700, 300)  
-        ]):
-            lbl = QLabel(label_text, styleSheet="color: #ffffff;")
-            slider = QSlider(Qt.Horizontal, minimum=0, maximum=int(max_val / 0.33), value=int(default / 0.33))
-            slider.valueChanged.connect(lambda v, l=lbl, idx=i: self.update_valve(v, l, idx))
-            slider.setStyleSheet("QSlider::handle:horizontal { background: #ffffff; }")
-            setattr(self, f"valve{i+1}_label", lbl)
-            setattr(self, f"valve{i+1}_slider", slider)
-            play_layout.addWidget(lbl)
-            play_layout.addWidget(slider)
+        self.graph_oxtest_PWM = pg.PlotWidget()
+        self.graph_oxtest_PWM.setTitle(graph_label.format("Proportional Valve PWM Response"))
+        self.graph_oxtest_PWM.setLabel('left', graph_label.format("PWM(0-255)"))
+        self.graph_oxtest_PWM.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_PWM.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_PWM.getAxis('bottom').setStyle(tickFont=font) 
 
-        button_layout = QHBoxLayout()
-        ignition_button = QPushButton("Ignition")
-        ignition_button.clicked.connect(self.ignition)
-        ignition_button.setStyleSheet("background-color: #ffffff; color: #000000;")
-        ignition_button.setFont(font)
-        button_layout.addWidget(ignition_button)
+        self.graph_oxtest_mdot_air = pg.PlotWidget()
+        self.graph_oxtest_mdot_air.setTitle(graph_label.format("Mass Flow Rate of Air"))
+        self.graph_oxtest_mdot_air.setLabel('left', graph_label.format("mdot (g/s)"))
+        self.graph_oxtest_mdot_air.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_mdot_air.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_mdot_air.getAxis('bottom').setStyle(tickFont=font) 
 
-        shutdown_button = QPushButton("Shutdown")
-        shutdown_button.clicked.connect(self.shutdown)
-        shutdown_button.setStyleSheet("background-color: #ffffff; color: #000000;")
-        shutdown_button.setFont(font)
-        button_layout.addWidget(shutdown_button)
-        play_layout.addLayout(button_layout)
+        self.graph_oxtest_mtotal_air = pg.PlotWidget()
+        self.graph_oxtest_mtotal_air.setTitle(graph_label.format("Total Mass Flowed of Air"))
+        self.graph_oxtest_mtotal_air.setLabel('left', graph_label.format("m (g)"))
+        self.graph_oxtest_mtotal_air.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_oxtest_mtotal_air.getAxis('left').setStyle(tickFont=font)
+        self.graph_oxtest_mtotal_air.getAxis('bottom').setStyle(tickFont=font) 
 
-        graph_layout2 = QHBoxLayout()
-        graph_column1 = QVBoxLayout()
-        self.graph_A0A1 = pg.PlotWidget(title=graph_label.format("A0/A1"))
-        self.graph_A0A1.setLabel('left', graph_label.format("P (kPa)"))
+        self.graph_A0A1 = pg.PlotWidget()
+        self.graph_A0A1.setTitle(graph_label.format("A0/A1"))
+        self.graph_A0A1.setLabel('left', graph_label.format("P (psi)"))
         self.graph_A0A1.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_A0A1.getAxis('left').setStyle(tickFont=font)
         self.graph_A0A1.getAxis('bottom').setStyle(tickFont=font)
-        graph_column1.addWidget(self.graph_A0A1)
 
-        self.graph_PWM1 = pg.PlotWidget(title=graph_label.format("PWM1"))
+        self.graph_PWM1 = pg.PlotWidget()
+        self.graph_PWM1.setTitle(graph_label.format("PWM1"))
         self.graph_PWM1.setLabel('left', graph_label.format("PWM(0-255)"))
         self.graph_PWM1.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_PWM1.getAxis('left').setStyle(tickFont=font)
         self.graph_PWM1.getAxis('bottom').setStyle(tickFont=font)
-        graph_column1.addWidget(self.graph_PWM1)
 
-        graph_column2 = QVBoxLayout()
-        self.graph_A2A3 = pg.PlotWidget(title=graph_label.format("A2/A3"))
-        self.graph_A2A3.setLabel('left', graph_label.format("P (kPa)"))
+        self.graph_A2A3 = pg.PlotWidget()
+        self.graph_A2A3.setTitle(graph_label.format("A2/A3"))
+        self.graph_A2A3.setLabel('left', graph_label.format("P (psi)"))
         self.graph_A2A3.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_A2A3.getAxis('left').setStyle(tickFont=font)
         self.graph_A2A3.getAxis('bottom').setStyle(tickFont=font)
-        graph_column2.addWidget(self.graph_A2A3)
 
-        self.graph_PWM2 = pg.PlotWidget(title=graph_label.format("PWM2"))
+        self.graph_PWM2 = pg.PlotWidget()
+        self.graph_PWM2.setTitle(graph_label.format("PWM2"))
         self.graph_PWM2.setLabel('left', graph_label.format("PWM(0-255)"))
         self.graph_PWM2.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_PWM2.getAxis('left').setStyle(tickFont=font)
         self.graph_PWM2.getAxis('bottom').setStyle(tickFont=font)
-        graph_column2.addWidget(self.graph_PWM2)
 
-        self.graph_A4A5 = pg.PlotWidget(title=graph_label.format("A4/A5"))
-        self.graph_A4A5.setLabel('left', graph_label.format("P (kPa)"))
+        self.graph_A4A5 = pg.PlotWidget()
+        self.graph_A4A5.setTitle(graph_label.format("A4/A5"))
+        self.graph_A4A5.setLabel('left', graph_label.format("P (psi)"))
         self.graph_A4A5.setLabel('bottom', graph_label.format("t (ms)"))
         self.graph_A4A5.getAxis('left').setStyle(tickFont=font)
         self.graph_A4A5.getAxis('bottom').setStyle(tickFont=font)
+
+        self.graph_dP_fuel = pg.PlotWidget()
+        self.graph_dP_fuel.setTitle(graph_label.format("delta A0/A1"))
+        self.graph_dP_fuel.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_dP_fuel.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_dP_fuel.getAxis('left').setStyle(tickFont=font)
+        self.graph_dP_fuel.getAxis('bottom').setStyle(tickFont=font)
+
+        self.graph_dP_ox = pg.PlotWidget()
+        self.graph_dP_ox.setTitle(graph_label.format("delta A2/A3"))
+        self.graph_dP_ox.setLabel('left', graph_label.format("P (psi)"))
+        self.graph_dP_ox.setLabel('bottom', graph_label.format("t (ms)"))
+        self.graph_dP_ox.getAxis('left').setStyle(tickFont=font)
+        self.graph_dP_ox.getAxis('bottom').setStyle(tickFont=font)
+
+        # Layout Setup and Widget Placement -------------------------------------
+        self.menu_tab = QWidget()
+        menu_layout = QVBoxLayout()
+        self.menu_tab.setFont(font)
+        self.menu_tab.setLayout(menu_layout)
+        self.tabs.addTab(self.menu_tab, "Menu")
+        menu_layout.addWidget(self.logo_label)
+        menu_layout.addWidget(self.menu_title_label)
+        menu_layout.addWidget(self.menu_text_label)
+
+        self.connection_tab = QWidget()
+        connection_layout = QVBoxLayout()
+        self.connection_tab.setFont(font)
+        self.connection_tab.setLayout(connection_layout)
+        self.tabs.addTab(self.connection_tab, "Settings")
+        connection_layout.addWidget(self.connection_title_label)
+        connection_layout.addWidget(self.connection_output)
+        connection_layout.addWidget(self.init_serial_button)
+        connection_layout.addWidget(self.test_connection_button)
+        connection_layout.addWidget(self.tune_label)
+
+        slider_layout = QHBoxLayout()
+        slider_v1_section = QVBoxLayout()
+        slider_v1_section.addWidget(self.kp_label)
+        slider_v1_section.addWidget(self.kp_slider)
+        slider_v1_section.addWidget(self.ki_label)
+        slider_v1_section.addWidget(self.ki_slider)
+        slider_v1_section.addWidget(self.kd_label)
+        slider_v1_section.addWidget(self.kd_slider)
+
+        slider_v2_section = QVBoxLayout()
+        slider_v2_section.addWidget(self.kp2_label)
+        slider_v2_section.addWidget(self.kp2_slider)
+        slider_v2_section.addWidget(self.ki2_label)
+        slider_v2_section.addWidget(self.ki2_slider)
+        slider_v2_section.addWidget(self.kd2_label)
+        slider_v2_section.addWidget(self.kd2_slider)
+
+        slider_layout.addLayout(slider_v1_section)
+        slider_layout.addLayout(slider_v2_section)
+        connection_layout.addLayout(slider_layout)
+
+        connection_layout.addWidget(self.send_k_button)
+        connection_layout.addWidget(self.note_label)
+        connection_layout.addWidget(self.pid_tune_test_button)
+
+        graph_layout = QHBoxLayout()
+        graph_layout.addWidget(self.graph_V1_PID)
+        graph_layout.addWidget(self.graph_V2_PID)
+        connection_layout.addLayout(graph_layout)
+
+        self.oxtest_tab = QWidget()
+        oxtest_layout = QVBoxLayout()
+        self.oxtest_tab.setLayout(oxtest_layout)
+        self.tabs.addTab(self.oxtest_tab, "Ox Test")
+        oxtest_layout.addWidget(self.oxtest_title_label)
+        oxtest_layout.addWidget(self.oxtest_output)
+        oxtest_button_layout = QHBoxLayout()
+        oxtest_button_layout.addWidget(self.initialise_ox_test_button)
+        oxtest_button_layout.addWidget(self.end_ox_test_button)
+        oxtest_layout.addLayout(oxtest_button_layout)
+        oxtest_pressure_graph_layout = QHBoxLayout()
+        oxtest_pressure_graph_layout.addWidget(self.graph_oxtest_voltage)
+        oxtest_pressure_graph_layout.addWidget(self.graph_oxtest_pressure)
+        oxtest_pressure_graph_layout.addWidget(self.graph_oxtest_deltaP)
+        oxtest_layout.addLayout(oxtest_pressure_graph_layout)
+        oxtest_valve_graph_layout = QHBoxLayout()
+        oxtest_valve_graph_layout.addWidget(self.graph_oxtest_PWM)
+        oxtest_valve_graph_layout.addWidget(self.graph_oxtest_sv)
+        oxtest_layout.addLayout(oxtest_valve_graph_layout)
+        oxtest_mass_graph_layout = QHBoxLayout()
+        oxtest_mass_graph_layout.addWidget(self.graph_oxtest_mdot_air)
+        oxtest_mass_graph_layout.addWidget(self.graph_oxtest_mtotal_air)
+        oxtest_layout.addLayout(oxtest_mass_graph_layout)
+        
+
+        self.control_tab = QWidget()
+        control_layout = QVBoxLayout()
+        self.control_tab.setLayout(control_layout)
+        self.tabs.addTab(self.control_tab, "Play")
+        control_layout.addWidget(self.control_title_label2)
+        control_layout.addWidget(self.control_output)
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.ignition_button)
+        button_layout.addWidget(self.shutdown_button)
+        control_layout.addLayout(button_layout)
+        control_layout.addWidget(self.valve1_label)
+        control_layout.addWidget(self.valve1_slider)
+        control_layout.addWidget(self.valve2_label)
+        control_layout.addWidget(self.valve2_slider)
+        
+
+        graph_layout2 = QHBoxLayout()
+        graph_column1 = QVBoxLayout()
+        graph_column1.addWidget(self.graph_A0A1)
+        graph_column1.addWidget(self.graph_PWM1)
+        graph_column2 = QVBoxLayout()
+        graph_column2.addWidget(self.graph_A2A3)
+        graph_column2.addWidget(self.graph_PWM2)
         graph_layout2.addLayout(graph_column1)
         graph_layout2.addLayout(graph_column2)
         graph_layout2.addWidget(self.graph_A4A5)
-        play_layout.addLayout(graph_layout2)
+        control_layout.addLayout(graph_layout2)
 
-        self.tabs.addTab(play_tab, "Play")
-
-        # Health Tab
-        health_tab = QWidget()
-        health_layout = QVBoxLayout(health_tab)
-        health_tab.setFont(font)
-
-        health_title_label = QLabel("Health Monitoring")
-        health_title_label.setFont(header_font)
-        health_title_label.setStyleSheet("color: white;")
-        health_layout.addWidget(health_title_label)
-
+        self.health_tab = QWidget()
+        health_layout = QVBoxLayout()
+        self.health_tab.setLayout(health_layout)
+        self.tabs.addTab(self.health_tab, "Health")
         graph_layout3 = QHBoxLayout()
-        self.graph_delta_A0A1 = pg.PlotWidget(title=graph_label.format("delta A0/A1"))
-        self.graph_delta_A0A1.setLabel('left', graph_label.format("P (kPa)"))
-        self.graph_delta_A0A1.setLabel('bottom', graph_label.format("t (ms)"))
-        self.graph_delta_A0A1.getAxis('left').setStyle(tickFont=font)
-        self.graph_delta_A0A1.getAxis('bottom').setStyle(tickFont=font)
-        graph_layout3.addWidget(self.graph_delta_A0A1)
-
-        self.graph_delta_A2A3 = pg.PlotWidget(title=graph_label.format("delta A2/A3"))
-        self.graph_delta_A2A3.setLabel('left', graph_label.format("P (kPa)"))
-        self.graph_delta_A2A3.setLabel('bottom', graph_label.format("t (ms)"))
-        self.graph_delta_A2A3.getAxis('left').setStyle(tickFont=font)
-        self.graph_delta_A2A3.getAxis('bottom').setStyle(tickFont=font)
-        graph_layout3.addWidget(self.graph_delta_A2A3)
+        graph_layout3.addWidget(self.graph_dP_fuel)
+        graph_layout3.addWidget(self.graph_dP_ox)
         health_layout.addLayout(graph_layout3)
 
-        self.tabs.addTab(health_tab, "Health")
 
         main_layout.addWidget(self.tabs)
         self.setLayout(main_layout)
-        self.update_port_list()
-        self.setup_plots()
-
-    def update_port_list(self):
-        ports = [port.device for port in serial.tools.list_ports.comports()]
-        self.port_combo.clear()
-        self.port_combo.addItems(ports)
-
-    def update_serial(self, port):
-        if self.serial_conn and self.serial_conn.is_open:
-            self.serial_thread.stop()
-            self.serial_thread.wait()
-            self.serial_conn.close()
-        self.init_serial()
+    
+    #--------------Stored Data Variables--------------
+    def variables(self):   
+        self.dataPointCount = []
+        self.V0 = []
+        self.V1 = []
+        self.V2 = []
+        self.V3 = []
+        self.V4 = []
+        self.V5 = []
+        self.A0 = []
+        self.A1 = []
+        self.A2 = []
+        self.A3 = []
+        self.A4 = []
+        self.A5 = []
+        self.dP_fuel = []
+        self.dP_ox = []
+        self.sv_fuel_output = []
+        self.sv_ox_output = []
+        self.pv_fuel_setpoint = []
+        self.pv_ox_setpoint = []
+        self.pv_fuel_output = []
+        self.pv_ox_output = []
+        self.time = []
+        self.pvMaxOpP = 1000
+        self.fuel_max_delta = 120                                
+        self.ox_max_delta = 700                
+        self.mdot_air = []
+        self.mtotal_air = []             
+    #--------------General Definitions----------------
 
     def init_serial(self):
         try:
-            port = self.port_combo.currentText()
-            if port:
-                self.serial_conn = serial.Serial(port, 115200, timeout=1)
-                self.serial_thread = SerialThread(self.serial_conn)
-                self.serial_thread.data_received.connect(self.handle_data)
-                self.serial_thread.message_received.connect(self.handle_message)
-                self.serial_thread.start()
-                self.settings_output.append(f"Serial port {port} initialized.")
+            self.serial_conn = serial.Serial("COM4", 115200, timeout=1)
+            self.running = True
+            self.serial_thread = SerialThread(self.serial_conn)
+            self.serial_thread.data_received.connect(self.handle_serial_data)
+            self.serial_thread.status_update.connect(self.connection_output.append)
+            self.serial_thread.start()
+            self.connection_output.append("Serial port initialized.")
         except serial.SerialException as e:
-            self.settings_output.append(f"Error: {e}")
+            self.connection_output.append(f"Error: {e}")
 
     def send_command(self, command):
+        """Sends a command through the serial port."""
         if self.serial_conn and self.serial_conn.is_open:
-            self.serial_conn.write((command + "\n").encode())
-
-    def read_serial_data(self):
-        if self.serial_conn and self.serial_conn.in_waiting:
-            return self.serial_conn.readline().decode().strip().split(",")
-        return None
-
-    def handle_data(self, data):
-        try:
-            if len(data) >= 19:  # Match new 19-field format
-                self.data["dataPointCount"].append(float(data[0]))
-                for i in range(6):
-                    self.data[f"V{i}"].append(float(data[i + 1]))
-                    self.data[f"P{i}"].append(float(data[i + 7]) )  
-                self.data["dP0"].append(float(data[13]) )  
-                self.data["dP1"].append(float(data[14]))  
-                self.data["SV0"].append(float(data[15]))
-                self.data["SV1"].append(float(data[16]))
-                self.data["SP0"].append(float(data[17]))  
-                self.data["SP1"].append(float(data[18]))  
-                self.data["OP0"].append(float(data[19]))
-                self.data["OP1"].append(float(data[20]))
-                self.data["time"].append(float(data[21]))
-                self.update_plots()
-                if abs(self.data["dP0"][-1]) > 17.4 or abs(self.data["dP1"][-1]) > 101.5:
-                    self.send_command("IDLE")
-                    self.play_output.append("Differential pressure limit exceeded, shutting down.")
-        except (ValueError, IndexError) as e:
-            self.settings_output.append(f"Data parse error: {e}")
-
-    def handle_message(self, msg):
-        if "TESTINGCONNECTION complete" in msg or "PID_DONE" in msg:
-            self.save_data()
-            self.settings_output.append(f"{msg} - Data saved.")
-        elif "EMERGENCY_SHUTDOWN" in msg:
-            self.play_output.append("Emergency shutdown triggered.")
-        elif "Calibration updated" in msg:
-            self.settings_output.append(msg)
-        elif "K values updated" in msg:
-            self.settings_output.append(msg)
-        else:
-            self.play_output.append(msg)
-
-    def setup_plots(self):
-        colors = {"data": "#ffffff", "setpoint": "#bfbfbf", "output": "#6d6d6d", "max": "#ff0000"}
-        self.plot_lines["V1_P"] = self.graph_V1_PID.plot(pen=colors["data"], name="P1 (kPa)")
-        self.plot_lines["V1_SP"] = self.graph_V1_PID.plot(pen=colors["setpoint"], name="V1 Setpoint (kPa)")
-        self.plot_lines["V1_OP"] = self.graph_V1_PID.plot(pen=colors["output"], name="V1 Output")
-
-        self.plot_lines["V2_P"] = self.graph_V2_PID.plot(pen=colors["data"], name="P3 (kPa)")
-        self.plot_lines["V2_SP"] = self.graph_V2_PID.plot(pen=colors["setpoint"], name="V2 Setpoint (kPa)")
-        self.plot_lines["V2_OP"] = self.graph_V2_PID.plot(pen=colors["output"], name="V2 Output")
-
-        self.plot_lines["A0"] = self.graph_A0A1.plot(pen=colors["data"], name="A0 (kPa)")
-        self.plot_lines["A1"] = self.graph_A0A1.plot(pen=colors["setpoint"], name="A1 (kPa)")
-        self.plot_lines["V1_SP_A0A1"] = self.graph_A0A1.plot(pen=colors["output"], name="V1 Setpoint (kPa)")
-        self.plot_lines["V1_OP_PWM1"] = self.graph_PWM1.plot(pen=colors["data"], name="V1 PWM")
-
-        self.plot_lines["A2"] = self.graph_A2A3.plot(pen=colors["data"], name="A2 (kPa)")
-        self.plot_lines["A3"] = self.graph_A2A3.plot(pen=colors["setpoint"], name="A3 (kPa)")
-        self.plot_lines["V2_SP_A2A3"] = self.graph_A2A3.plot(pen=colors["output"], name="V2 Setpoint (kPa)")
-        self.plot_lines["V2_OP_PWM2"] = self.graph_PWM2.plot(pen=colors["data"], name="V2 PWM")
-
-        self.plot_lines["A4"] = self.graph_A4A5.plot(pen=colors["data"], name="A4 (kPa)")
-        self.plot_lines["A5"] = self.graph_A4A5.plot(pen=colors["setpoint"], name="A5 (kPa)")
-
-        self.plot_lines["dP0"] = self.graph_delta_A0A1.plot(pen=colors["data"], name="Fuel dP (kPa)")
-        self.plot_lines["dP0_max"] = self.graph_delta_A0A1.plot(pen=colors["max"], name="Max Delta (120 kPa)")
-        self.plot_lines["dP1"] = self.graph_delta_A2A3.plot(pen=colors["data"], name="Ox dP (kPa)")
-        self.plot_lines["dP1_max"] = self.graph_delta_A2A3.plot(pen=colors["max"], name="Max Delta (700 kPa)")
-
-    def update_plots(self):
-        t = self.data["time"]
-        self.plot_lines["V1_P"].setData(t, self.data["P1"])
-        self.plot_lines["V1_SP"].setData(t, self.data["SP0"])
-        self.plot_lines["V1_OP"].setData(t, self.data["OP0"])
-
-        self.plot_lines["V2_P"].setData(t, self.data["P3"])
-        self.plot_lines["V2_SP"].setData(t, self.data["SP1"])
-        self.plot_lines["V2_OP"].setData(t, self.data["OP1"])
-
-        self.plot_lines["A0"].setData(t, self.data["P0"])
-        self.plot_lines["A1"].setData(t, self.data["P1"])
-        self.plot_lines["V1_SP_A0A1"].setData(t, self.data["SP0"])
-        self.plot_lines["V1_OP_PWM1"].setData(t, self.data["OP0"])
-
-        self.plot_lines["A2"].setData(t, self.data["P2"])
-        self.plot_lines["A3"].setData(t, self.data["P3"])
-        self.plot_lines["V2_SP_A2A3"].setData(t, self.data["SP1"])
-        self.plot_lines["V2_OP_PWM2"].setData(t, self.data["OP1"])
-
-        self.plot_lines["A4"].setData(t, self.data["P4"])
-        self.plot_lines["A5"].setData(t, self.data["P5"])
-
-        self.plot_lines["dP0"].setData(t, self.data["dP0"])
-        self.plot_lines["dP0_max"].setData(t, [120] * len(t))
-        self.plot_lines["dP1"].setData(t, self.data["dP1"])
-        self.plot_lines["dP1_max"].setData(t, [700] * len(t))
-
+            try:
+                self.serial_conn.write((command + "\n").encode())
+            except serial.SerialException as e:
+                self.connection_output.append(f"Error sending command '{command}': {e}")
+    
     def save_data(self):
-        timestamp = datetime.now().strftime("%m-%d_%H-%M")
-        file_name = os.path.join(os.getcwd(), f"DATA_{timestamp}.csv")
-        with open(file_name, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "Time", "V0", "V1", "V2", "V3", "V4", "V5", "P0", "P1", "P2", "P3", "P4", "P5",
-                "dP0", "dP1", "SV0", "SV1", "SP0", "SP1", "OP0", "OP1"
-            ])
-            for i in range(len(self.data["time"])):
+        """Saves all data to a CSV file with a timestamp."""
+        try:
+            current_dir = os.getcwd()
+            timestamp = datetime.now().strftime("%m-%d_%H-%M")
+            file_name = os.path.join(current_dir, f"DATA_{timestamp}.csv")
+
+            with open(file_name, mode='w', newline='') as file:
+                writer = csv.writer(file)
                 writer.writerow([
-                    self.data["time"][i],
-                    self.data["V0"][i], self.data["V1"][i], self.data["V2"][i], self.data["V3"][i],
-                    self.data["V4"][i], self.data["V5"][i], self.data["P0"][i], self.data["P1"][i],
-                    self.data["P2"][i], self.data["P3"][i], self.data["P4"][i], self.data["P5"][i],
-                    self.data["dP0"][i], self.data["dP1"][i], self.data["SV0"][i], self.data["SV1"][i],
-                    self.data["SP0"][i], self.data["SP1"][i], self.data["OP0"][i], self.data["OP1"][i]
+                    "Data Point Count", "V0", "V1", "V2", "V3", "V4", "V5",
+                    "A0", "A1", "A2", "A3", "A4", "A5",
+                    "dP Fuel", "dP Ox",
+                    "SV Fuel Output", "SV Ox Output",
+                    "PV Fuel Setpoint", "PV Ox Setpoint",
+                    "PV Fuel Output", "PV Ox Output",
+                    "Time",
+                    "Air Mass Flow Rate (g/s)", "Air Total Mass Flowed (g)"
                 ])
+                for i in range(len(self.time)):
+                    writer.writerow([
+                        self.dataPointCount[i] if i < len(self.dataPointCount) else "",
+                        self.V0[i] if i < len(self.V0) else "",
+                        self.V1[i] if i < len(self.V1) else "",
+                        self.V2[i] if i < len(self.V2) else "",
+                        self.V3[i] if i < len(self.V3) else "",
+                        self.V4[i] if i < len(self.V4) else "",
+                        self.V5[i] if i < len(self.V5) else "",
+                        self.A0[i] if i < len(self.A0) else "",
+                        self.A1[i] if i < len(self.A1) else "",
+                        self.A2[i] if i < len(self.A2) else "",
+                        self.A3[i] if i < len(self.A3) else "",
+                        self.A4[i] if i < len(self.A4) else "",
+                        self.A5[i] if i < len(self.A5) else "",
+                        self.dP_fuel[i] if i < len(self.dP_fuel) else "",
+                        self.dP_ox[i] if i < len(self.dP_ox) else "",
+                        self.sv_fuel_output[i] if i < len(self.sv_fuel_output) else "",
+                        self.sv_ox_output[i] if i < len(self.sv_ox_output) else "",
+                        self.pv_fuel_setpoint[i] if i < len(self.pv_fuel_setpoint) else "",
+                        self.pv_ox_setpoint[i] if i < len(self.pv_ox_setpoint) else "",
+                        self.pv_fuel_output[i] if i < len(self.pv_fuel_output) else "",
+                        self.pv_ox_output[i] if i < len(self.pv_ox_output) else "",
+                        self.time[i],
+                        self.mdot_air[i] if i < len(self.mdot_air) else "",
+                        self.mtotal_air[i] if i < len(self.mtotal_air) else ""
+                    ])
+            self.connection_output.append(f"Data saved to {file_name}")
+        except Exception as e:
+            self.connection_output.append(f"Error saving data: {e}")
 
-    def update_valve(self, value, label, index):
-        val = value * 0.33
-        label.setText(f"Valve {index + 1} ({'Fuel' if index == 0 else 'Oxidizer'}): {val:.2f} kPa")
+    #-------------DATA PROCESSING---------------------
+    def calculate_mass_flow_rate_air(self, dp_ox, A2, A3):
+        q = self.Q_REF * np.sqrt(dp_ox / self.DP_REF)
+        avg_pressure = (A2 + A3) / 2 * 1000.0
+        density = avg_pressure / (self.R_GAS * self.TEMP)
+        q_m3_per_s = (q / 60.0) * 1e-3
+        mass_flow_rate = density * q_m3_per_s * 1000.0
+        return mass_flow_rate
+
+    def calculate_time_constant_air(self):
+        def exp_decay(t, p_final, p_delta, tau):
+            return p_final + p_delta * np.exp(-t / tau)
+        
+        try:
+            # Convert times to seconds and make relative to start
+            t = np.array([time_val / 1000.0 for time_val in self.time])
+            t = t - t[0]  # Make time relative to start
+            p = np.array(self.A3)
+
+            # Initial guesses: p_final = last value, p_delta = initial - final, tau = 20
+            p0 = [p[-1], p[0] - p[-1], 20.0]
+            popt, _ = curve_fit(exp_decay, t, p, p0=p0, maxfev=10000)
+            time_constant = popt[2]  # τ in seconds
+
+            # Update GUI
+            self.time_constant_label.setText(f"Time Constant (τ): {time_constant:.2f} s")
+            return time_constant
+
+        except Exception as e:
+            self.oxtest_output.append(f"Error calculating time constant: {e}")
+            self.time_constant_label.setText("Time Constant (τ): N/A")
+            return None
+
+    #-------------K-Slider Definitions-----------------
+
+    def update_kp(self):
+        value = self.kp_slider.value() * 0.1
+        self.kp_label.setText(f"kp: {value:.2f}")
+
+    def update_ki(self):
+        value = self.ki_slider.value() * 0.1
+        self.ki_label.setText(f"ki: {value:.2f}")
+
+    def update_kd(self):
+        value = self.kd_slider.value() * 0.1
+        self.kd_label.setText(f"kd: {value:.2f}")
+
+    def update_kp2(self):
+        value = self.kp2_slider.value() * 0.1
+        self.kp2_label.setText(f"kp: {value:.2f}")
+
+    def update_ki2(self):
+        value = self.ki2_slider.value() * 0.1
+        self.ki2_label.setText(f"ki: {value:.2f}")
+
+    def update_kd2(self):
+        value = self.kd2_slider.value() * 0.1
+        self.kd2_label.setText(f"kd: {value:.2f}")
+
+    def send_k_values_connection(self):
+        self.send_command("UPDATE_K_VALUES")
+
+        # Wait for Arduino to confirm it has entered the state
+        while True:
+            response = self.handle_serial_data()
+            if "State set to UPDATEKVALUES" in response:  # Arduino confirms state change
+                self.connection_output.append(response)
+                break  # Exit loop when confirmation is received
+            time.sleep(0.05)  # Small delay to avoid busy-waiting
+        
+        kp_value = self.kp_slider.value() * 0.1
+        ki_value = self.ki_slider.value() * 0.1
+        kd_value = self.kd_slider.value() * 0.1
+        kp2_value = self.kp2_slider.value() * 0.1
+        ki2_value = self.ki2_slider.value() * 0.1
+        kd2_value = self.kd2_slider.value() * 0.1
+        self.send_command(f"{kp_value},{ki_value},{kd_value},{kp2_value}, {ki2_value}, {kd2_value}")
+
+        response = self.handle_serial_data()
+        self.connection_output.append(response)
+    
+    #--------------Setpoint-Slider Definitions-----------
+
+    def update_fuel_PV(self):
+        value = self.valve1_slider.value()
+        self.valve1_label.setText(f"Valve 1: {value:.2f}")
         self.send_setpoints()
-
+    
+    def update_ox_PV(self):
+        value = self.oxtest_valve_slider.value()
+        self.oxtest_slider_label.setText(f"ox Valve: {value:.2f} kPa")
+        self.oxtest_output.append(f"Slider moved to: {value} kPa")
+        self.send_oxtest_setpoint()
+    
     def send_setpoints(self):
         if self.serial_conn and self.serial_conn.is_open:
-            v1_val = self.valve1_slider.value() * 0.33
-            v2_val = self.valve2_slider.value() * 0.33
-            self.send_command(f"UPDATESETPOINTS,{v1_val},{v2_val}")
+            valve1_value = self.valve1_slider.value() 
+            valve2_value = self.valve2_slider.value() 
+            self.serial_conn.write(f"UPDATESETPOINTS,{valve1_value},{valve2_value}\n".encode())
 
-    def send_k_values(self):
-        self.send_command("UPDATE_K_VALUES")
-        time.sleep(0.1)
-        kp1 = self.kpV1_slider.value() * 0.1
-        ki1 = self.kiV1_slider.value() * 0.1
-        kd1 = self.kdV1_slider.value() * 0.1
-        kp2 = self.kpV2_slider.value() * 0.1
-        ki2 = self.kiV2_slider.value() * 0.1
-        kd2 = self.kdV2_slider.value() * 0.1
-        self.send_command(f"{kp1},{ki1},{kd1},{kp2},{ki2},{kd2}")
-        self.settings_output.append(f"K values sent: {kp1},{ki1},{kd1},{kp2},{ki2},{kd2}")
+    #--------------Test Definitions----------------
 
-    def send_calibration(self):
-        v_min = self.v_min_edit.text()
-        v_max = self.v_max_edit.text()
-        p_min = self.p_min_edit.text()
-        p_max = self.p_max_edit.text()
-        v_ref = self.v_ref_edit.text()
-        try:
-            float(v_min), float(v_max), float(p_min), float(p_max), float(v_ref)
-            self.send_command(f"UPDATE_CALIBRATION,{v_min},{v_max},{p_min},{p_max},{v_ref}")
-        except ValueError:
-            self.settings_output.append("Error: Calibration values must be numbers")
+    def handle_serial_data(self, data):
+        """Default handler for serial data when no test is active."""
+        if data:  # Check for valid data
+            response_str = ",".join(data)
+            self.connection_output.append(f"Received: {response_str}")
+            
+            # Highlight critical states for safety
+            if "IDLE" in response_str:
+                self.connection_output.append("System is in IDLE state.")
+            elif "MAXdP_EXCEEDED" in response_str:
+                self.connection_output.append("Warning: Maximum pressure differential exceeded.")
+            elif "MAXP_EXCEEDED" in response_str:
+                self.connection_output.append("Warning: Maximum pressure exceeded.")
 
     def test_connection(self):
         self.send_command("TEST_CONNECTION")
+        self.connection_output.append("Starting TEST_CONNECTION...")
+        self.serial_thread.data_received.disconnect()  # Clear previous handler
+        self.serial_thread.data_received.connect(self.handle_test_connection_data)
+
+    def handle_test_connection_data(self, response):
+        try:
+            response_str = ",".join(response)
+            if "IDLE" in response_str:
+                self.connection_output.append("Test completed. Returning to idle.")
+                self.serial_thread.data_received.disconnect(self.handle_test_connection_data)
+                self.serial_thread.data_received.connect(self.handle_serial_data)
+            else:
+                self.connection_output.append(response_str)
+        except Exception as e:
+            self.connection_output.append(f"Error in test_connection: {e}")
+    
+    def pid_tune_test_connection(self):
+        """ Tests connection of serial port and receives data for 1 second. """
+        self.send_command("PID_TUNE_TEST")
+
         while True:
-            response = self.read_serial_data()
-            if response and "IDLE" in response:
-                self.settings_output.append("Test completed. Returning to idle & saving data.")
-                self.save_data()
-                self.settings_output.append("Data saved to working directory.")
-                break
-            elif response:
-                self.settings_output.append(",".join(response))
+            response = self.handle_serial_data()
+
+            if response == "IDLE":
+                    self.connection_output.append("IDLE")
+                    self.save_data()
+                    self.connection_output.append("Data saved to working directory.")
+                    break
+            
+            elif response == "PID_DONE":
+                 self.connection_output.append("Test completed.")
+
+            else:
+                self.control_output.append(response)
+
+                self.datapointcount.append(float(response[0]))
+                self.A0.append(float(response[1]))
+                self.A1.append(float(response[2]))
+                self.A2.append(float(response[3]))
+                self.A3.append(float(response[4]))
+                self.A4.append(float(response[5]))
+                self.A5.append(float(response[6]))
+                self.pv_fuel_setpoint.append(float(response[7]))
+                self.pv_ox_setpoint.append(float(response[8]))
+                self.pv_fuel_output.append(float(response[9]))
+                self.pv_ox_output.append(float(response[10]))
+                self.time.append(float(response[11]))
+
+                self.dP_fuel.append(float(response[1]) - float(response[2]))  # A0 - A1
+                self.dP_ox.append(float(response[3]) - float(response[4]))  # A2 - A3
+
+                self.connection_output.append("Testing...")
+
+                # Append the response to graphs
+                # Plot for Valve 1: A1, pv_fuel_setpoint, pv_fuel_output vs. Time
+                self.graph_V1_PID.plot(self.time, self.A1, pen=pg.mkPen(color="#ffffff"), name="A1")
+                self.graph_V1_PID.plot(self.time, self.pv_fuel_setpoint, pen=pg.mkPen(color="#bfbfbf"), name="V1 Setpoint")
+                self.graph_V1_PID.plot(self.time, self.pv_fuel_output, pen=pg.mkPen(color="#6d6d6d"), name="V1 Output")
+
+                # Plot for Valve 2: A3, pv_ox_setpoint, pv_ox_output vs. Time
+                self.graph_V2_PID.plot(self.time, self.A3, pen=pg.mkPen(color="#ffffff"), name="A3")
+                self.graph_V2_PID.plot(self.time, self.pv_ox_setpoint, pen=pg.mkPen(color="#bfbfbf"), name="V2 Setpoint")
+                self.graph_V2_PID.plot(self.time, self.pv_ox_output, pen=pg.mkPen(color="#6d6d6d"), name="V2 Output")
+
+                # Plot for delta values for health checks: A0-A1, Max_delta vs Time
+                self.graph_dP_fuel.plot(self.time, self.dP_fuel, pen=pg.mkPen(color="#ffffff"), name="Delta A0/A1")
+                self.graph_dP_fuel.plot(self.time, [self.v1_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="MAX Delta A0/A1")
+                
+                # Plot for delta values for health checks: A2-A3, Max_delta vs Time
+                self.graph_dP_ox.plot(self.time, self.dP_ox, pen=pg.mkPen(color="#ffffff"), name="Delta A2/A3")
+                self.graph_dP_ox.plot(self.time, [self.v2_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Delta A0/A1")
+
+            # Allow UI to update to prevent freezing
             QApplication.processEvents()
 
-    def pid_tune_test(self):
-        self.send_command("PID_TUNE_TEST")
-        while True:
-            response = self.read_serial_data()
-            if response and "IDLE" in response:
-                self.settings_output.append("Test completed. Returning to idle & saving data.")
+    def oxtest(self):
+        # Clear data lists
+        self.dataPointCount.clear()
+        self.time.clear()
+        self.V2.clear()
+        self.V3.clear()
+        self.A2.clear()
+        self.A3.clear()
+        self.dP_ox.clear()
+        self.sv_ox_output.clear()
+        self.pv_ox_output.clear()
+        self.pv_ox_setpoint.clear()
+        self.mdot_air.clear()
+        self.mtotal_air.clear()
+
+        self.variables()  # Initialize plotting lists
+        if self.serial_conn and self.serial_conn.is_open:
+            self.serial_conn.flushInput()
+            # Send a test command to ensure Arduino is ready
+            self.serial_conn.write("TEST_CONNECTION\n".encode())
+            self.oxtest_output.append("Sent: TEST_CONNECTION")
+            # Wait for Arduino to respond
+            start_time = time.time()
+            while time.time() - start_time < 1.0:
+                if self.serial_conn.in_waiting:
+                    response = self.serial_conn.readline().decode().strip()
+                    if response == "TEST_CONNECTION started":
+                        self.oxtest_output.append("Arduino ready")
+                        break
+            # Start the test
+            self.send_command("OX_TEST")
+            self.oxtest_output.append("Starting OX_TEST...")
+            time.sleep(1.0)  # Wait for Arduino to enter OXTEST
+        self.ignore_idle_until = time.time() + 1.0
+        try:
+            self.serial_thread.data_received.disconnect()
+        except TypeError:
+            pass
+        self.serial_thread.data_received.connect(self.handle_oxtest_data)
+
+    def handle_oxtest_data(self, response):
+        """Handles serial data received during Ox test."""
+        try:
+            response_str = ",".join(response)
+            
+            if "IDLE" in response_str:
+                self.oxtest_output.append("IDLE")
                 self.save_data()
-                self.settings_output.append("Data saved to working directory.")
-                break
-            elif response and "PID_DONE" in response:
-                self.settings_output.append("PID tuning test completed.")
-            elif response:
-                try:
-                    self.data["dataPointCount"].append(float(response[0]))
-                    for i in range(6):
-                        self.data[f"V{i}"].append(float(response[i + 1]))
-                        self.data[f"P{i}"].append(float(response[i + 7])) 
-                    self.data["dP0"].append(float(response[13])) 
-                    self.data["dP1"].append(float(response[14]))  
-                    self.data["SV0"].append(float(response[15]))
-                    self.data["SV1"].append(float(response[16]))
-                    self.data["SP0"].append(float(response[17]))  
-                    self.data["SP1"].append(float(response[18])) 
-                    self.data["OP0"].append(float(response[19]))
-                    self.data["OP1"].append(float(response[20]))
-                    self.data["time"].append(float(response[21]))
-                    self.update_plots()
-                    self.settings_output.append("Testing...")
-                except (ValueError, IndexError) as e:
-                    self.settings_output.append(f"Data parse error: {e}")
-            QApplication.processEvents()
+                self.oxtest_output.append("Data saved to working directory.")
+                self.serial_thread.data_received.disconnect(self.handle_oxtest_data)
+                self.serial_thread.data_received.connect(self.handle_serial_data)
+            
+            elif "OX_DONE" in response_str:
+                self.oxtest_output.append("Test completed.")
+                self.serial_thread.data_received.disconnect(self.handle_oxtest_data)
+                self.serial_thread.data_received.connect(self.handle_serial_data)
+            
+            elif "MAXdP_EXCEEDED" in response_str:
+                self.oxtest_output.append("Maximum pressure differential exceeded, system shutdown.")
+                self.serial_thread.data_received.disconnect(self.handle_oxtest_data)
+                self.serial_thread.data_received.connect(self.handle_serial_data)
+            
+            elif "MAXP_EXCEEDED" in response_str:
+                self.oxtest_output.append("Maximum pressure exceeded, system shutdown.")
+                self.serial_thread.data_received.disconnect(self.handle_oxtest_data)
+                self.serial_thread.data_received.connect(self.handle_serial_data)
+            
+            elif not response or len(response) < 22 or not response[0]:
+                return  # Skip invalid data
+            
+            else:
+                self.oxtest_output.append(response_str)
+
+                # Populate data lists
+                self.dataPointCount.append(float(response[0]))
+                self.V0.append(float(response[1]))
+                self.V1.append(float(response[2]))
+                self.V2.append(float(response[3]))
+                self.V3.append(float(response[4]))
+                self.V4.append(float(response[5]))
+                self.V5.append(float(response[6]))
+                self.A0.append(float(response[7]))
+                self.A1.append(float(response[8]))
+                self.A2.append(float(response[9]))
+                self.A3.append(float(response[10]))
+                self.A4.append(float(response[11]))
+                self.A5.append(float(response[12]))
+                self.dP_fuel.append(float(response[13]))
+                self.dP_ox.append(float(response[14]))
+                self.sv_fuel_output.append(float(response[15]))
+                self.sv_ox_output.append(float(response[16]))
+                self.pv_fuel_setpoint.append(float(response[17]))
+                self.pv_ox_setpoint.append(float(response[18]))
+                self.pv_fuel_output.append(float(response[19]))
+                self.pv_ox_output.append(float(response[20]))
+                self.time.append(float(response[21]))
+
+                massFlowRates = self.calculate_mass_flow_rate_air(
+                    float(response[14]), # dpOX
+                    float(response[9]), # A2
+                    float(response[10]) # A3
+                )
+                self.mdot_air.append(massFlowRates)
+
+                # Calculate total mass flowed (numerical integration using trapezoidal rule)
+                if len(self.time) > 1:
+                    dt = (self.time[-1] - self.time[-2]) / 1000.0  # Convert ms to s
+                    avg_mass_flow = (self.mdot_air[-1] + self.mdot_air[-2]) / 2
+                    delta_mass = avg_mass_flow * dt
+                    if len(self.mtotal_air) == 0:
+                        total_mass = delta_mass
+                    else:
+                        total_mass = self.mtotal_air[-1] + delta_mass
+                else:
+                    total_mass = 0.0
+                self.mtotal_air.append(total_mass)
+
+                # Calculate time constant for fully open test (PWM = 255)
+                #if float(response[20]) == 255 and len(self.time) > 5:  # Need enough points to fit
+                #    self.calculate_time_constant_air()
+
+                # Optimize plotting 
+                if len(self.time) > 1000:
+                    self.time = self.time[-1000:]
+                    self.V2 = self.V2[-1000:]
+                    self.V3 = self.V3[-1000:]
+                    self.A2 = self.A2[-1000:]
+                    self.A3 = self.A3[-1000:]
+                    self.pv_ox_setpoint = self.pv_ox_setpoint[-1000:]
+                    self.dP_ox = self.dP_ox[-1000:]
+                    self.pv_ox_output = self.pv_ox_output[-1000:]
+                    self.sv_ox_output = self.sv_ox_output[-1000:]
+                    self.mdot_air = self.mdot_air[-1000:]
+                    self.mtotal_air = self.mtotal_air[-1000:]
+
+                # Plotting with clearing
+                self.graph_oxtest_voltage.clear()
+                self.graph_oxtest_voltage.plot(self.time, self.V2, pen=pg.mkPen(color="#ffffff"), name="V2")
+                self.graph_oxtest_voltage.plot(self.time, self.V3, pen=pg.mkPen(color="#bfbfbf"), name="V3")
+
+                self.graph_oxtest_pressure.clear()
+                self.graph_oxtest_pressure.plot(self.time, self.A2, pen=pg.mkPen(color="#ffffff"), name="A2")
+                self.graph_oxtest_pressure.plot(self.time, self.A3, pen=pg.mkPen(color="#bfbfbf"), name="A3")
+                self.graph_oxtest_pressure.plot(self.time, self.pv_ox_setpoint, pen=pg.mkPen(color="#bfbfbf"), name="Ox Setpoint")
+                self.graph_oxtest_pressure.plot(self.time, [self.pvMaxOpP] * len(self.time), pen=pg.mkPen(color="#6d6d6d"), name="Max Op P")
+
+                self.graph_oxtest_deltaP.clear()
+                self.graph_oxtest_deltaP.plot(self.time, self.dP_ox, pen=pg.mkPen(color="#ffffff"), name="dPOx")
+                self.graph_oxtest_deltaP.plot(self.time, [self.ox_max_delta] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Max dPOx")
+
+                self.graph_oxtest_PWM.clear()
+                self.graph_oxtest_PWM.plot(self.time, self.pv_ox_output, pen=pg.mkPen(color="#ffffff"), name="Ox PWM")
+
+                self.graph_oxtest_sv.clear()
+                self.graph_oxtest_sv.plot(self.time, self.sv_ox_output, pen=pg.mkPen(color="#ffffff"), name="Ox SV")
+
+                self.graph_oxtest_mdot_air.clear()
+                self.graph_oxtest_mdot_air.plot(self.time, self.mdot_air, pen=pg.mkPen(color="#ffffff"), name="Air mdot (g/s)")
+
+                self.graph_oxtest_mtotal_air.clear()
+                self.graph_oxtest_mtotal_air.plot(self.time, self.mtotal_air, pen=pg.mkPen(color="#ffffff"), name="Air mdot (g/s)")
+        except Exception as e:
+            self.oxtest_output.append(f"Error in oxtest: {e}")
+
 
     def ignition(self):
+        """Begins ignition of thruster and runs through thrusting sequence."""
         self.send_command("IGNITION")
+
         while True:
-            response = self.read_serial_data()
-            if response and "IDLE" in response:
-                self.play_output.append("Test completed. Returning to idle & saving data.")
-                self.save_data()
-                self.play_output.append("Data saved to working directory.")
-                break
-            elif response and any(state in response for state in ["IGNITION", "THRUSTING", "COOLING"]):
-                self.play_output.append(f"{response.split(',')[0]} state commenced.")
-            elif response:
-                try:
-                    self.data["dataPointCount"].append(float(response[0]))
-                    for i in range(6):
-                        self.data[f"V{i}"].append(float(response[i + 1]))
-                        self.data[f"P{i}"].append(float(response[i + 7])) 
-                    self.data["dP0"].append(float(response[13])) 
-                    self.data["dP1"].append(float(response[14]))  
-                    self.data["SV0"].append(float(response[15]))
-                    self.data["SV1"].append(float(response[16]))
-                    self.data["SP0"].append(float(response[17]))  
-                    self.data["SP1"].append(float(response[18]))  
-                    self.data["OP0"].append(float(response[19]))
-                    self.data["OP1"].append(float(response[20]))
-                    self.data["time"].append(float(response[21]))
-                    self.update_plots()
-                    if abs(self.data["dP0"][-1]) > 17.4 or abs(self.data["dP1"][-1]) > 101.5:
-                        self.send_command("IDLE")
-                        self.play_output.append("Differential pressure limit exceeded, shutting down.")
-                    self.play_output.append("Testing...")
-                except (ValueError, IndexError) as e:
-                    self.play_output.append(f"Data parse error: {e}")
+            response = self.handle_serial_data()
+
+            if response == "IDLE":
+                    self.control_output.append("Test completed. Returning to idle & saving data.")
+                    self.save_data()
+                    self.control_output.append("Data saved to working directory.")
+                    break
+            
+            elif response == "IGNITION":
+                    self.control_output.append("Ignition state commenced.")
+
+            elif response == "THRUSTING":
+                    self.control_output.append("Thrusting state commenced.")
+
+            elif response == "COOLING":
+                    self.control_output.append("Cooling state commenced")
+
+            else:
+                self.datapointcount.append(float(response[0]))
+                self.A0.append(float(response[1]))
+                self.A1.append(float(response[2]))
+                self.A2.append(float(response[3]))
+                self.A3.append(float(response[4]))
+                self.A4.append(float(response[5]))
+                self.A5.append(float(response[6]))
+                self.pv_fuel_setpoint.append(float(response[7]))
+                self.pv_ox_setpoint.append(float(response[8]))
+                self.pv_fuel_output.append(float(response[9]))
+                self.pv_ox_output.append(float(response[10]))
+                self.time.append(float(response[11]))
+
+                
+                self.dP_fuel.append(float(response[1]) - float(response[2]))  # A0 - A1
+                self.dP_ox.append(float(response[3]) - float(response[4]))  # A2 - A3
+
+                # Valve deltaP limits safety check
+                if self.dP_fuel[-1] > self.v1_max_delta or self.dP_ox[-1] > self.v2_max_delta:
+                    self.send_command("IDLE")
+
+                self.control_output.append("Testing...")
+
+                # Append the response to graphs
+                # A0/A1
+                self.graph_A0A1.plot(self.time, self.A0, pen=pg.mkPen(color="#ffffff"), name="A0")
+                self.graph_A0A1.plot(self.time, self.A1, pen=pg.mkPen(color="#bfbfbf"), name="A1")
+                self.graph_A0A1.plot(self.time, self.pv_fuel_setpoint, pen=pg.mkPen(color="#6d6d6d"), name="V1 Setpoint")
+
+                # Plot for Valve 1: PWM vs. Time
+                self.graph_PWM1.plot(self.time, self.pv_fuel_output, pen="g", name="V1 PWM Response")
+
+                # A2/A3
+                self.graph_A2A3.plot(self.time, self.A2, pen=pg.mkPen(color="#ffffff"), name="A0")
+                self.graph_A2A3.plot(self.time, self.A3, pen=pg.mkPen(color="#bfbfbf"), name="A1")
+                self.graph_A2A3.plot(self.time, self.pv_ox_setpoint, pen=pg.mkPen(color="#6d6d6d"), name="V2 Setpoint")
+
+                # Plot for Valve 2: PWM vs. Time
+                self.graph_PWM2.plot(self.time, self.pv_ox_output, pen=pg.mkPen(color="#ffffff"), name="V2 PWM Response")
+
+                # Plot for delta values for health checks: A0-A1, Max_delta vs Time
+                self.graph_dP_fuel.plot(self.time, self.dP_fuel, pen=pg.mkPen(color="#ffffff"), name="Delta A0/A1")
+                self.graph_dP_fuel.plot(self.time, [self.v1_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="MAX Delta A0/A1")
+                
+                # Plot for delta values for health checks: A2-A3, Max_delta vs Time
+                self.graph_dP_ox.plot(self.time, self.dP_ox, pen=pg.mkPen(color="#ffffff"), name="Delta A2/A3")
+                self.graph_dP_ox.plot(self.time, [self.v2_max_delta[0]] * len(self.time), pen=pg.mkPen(color="#bfbfbf"), name="Delta A0/A1")
+
+            # Allow UI to update to prevent freezing
             QApplication.processEvents()
+
+    def end_oxtest(self):
+        self.send_command("IDLEOX")
+        self.oxtest_output.append("Sending End Ox Test Command...")
+        response = self.handle_serial_data()
+        self.oxtest_output.append(response)
+        self.save_data()
+        self.oxtest_output.append("Data saved to working directory.")
+
 
     def shutdown(self):
         self.send_command("IDLE")
-        self.play_output.append("Forced System Shutdown...")
-        response = self.read_serial_data()
-        if response:
-            self.play_output.append(response[0])
+        self.control_output.append("Forced System Shutdown...")
+        response = self.handle_serial_data()
+        self.control_output.append(response)
         self.save_data()
-        self.play_output.append("Data saved to working directory.")
+        self.control_output.append("Data saved to working directory.")
 
     def closeEvent(self, event):
-        if self.serial_thread:
-            self.serial_thread.stop()
-            self.serial_thread.wait()
+        self.running = False
         if self.serial_conn:
             self.serial_conn.close()
         event.accept()
-
-    def update_kpV1(self):
-        value = self.kpV1_slider.value() * 0.1
-        self.kpV1_label.setText(f"kp: {value:.2f}")
-
-    def update_kiV1(self):
-        value = self.kiV1_slider.value() * 0.1
-        self.kiV1_label.setText(f"ki: {value:.2f}")
-
-    def update_kdV1(self):
-        value = self.kdV1_slider.value() * 0.1
-        self.kdV1_label.setText(f"kd: {value:.2f}")
-
-    def update_kpV2(self):
-        value = self.kpV2_slider.value() * 0.1
-        self.kpV2_label.setText(f"kp: {value:.2f}")
-
-    def update_kiV2(self):
-        value = self.kiV2_slider.value() * 0.1
-        self.kiV2_label.setText(f"ki: {value:.2f}")
-
-    def update_kdV2(self):
-        value = self.kdV2_slider.value() * 0.1
-        self.kdV2_label.setText(f"kd: {value:.2f}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
