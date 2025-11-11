@@ -137,13 +137,23 @@ void checkPressureLimits(int mode = 0) {
     }
   }
   if (mode == 1) { // OX_TEST: Only check oxidizer differential (ptdP[1]) and relevant pressure
-    if (abs(ptdP[1]) > pvOxMaxdP) {
-      Serial.println("MAXdP_EXCEEDED");
-      currentState = IDLE;
-    }
-    if (ptOutputsP[3] > ptMaxP) { // Check only pressure[3] (oxidizer-related)
-      Serial.println("MAXP_EXCEEDED");
-      currentState = IDLE;
+    struct FaultCheck {
+      bool (*cond)();
+      const char* msg;
+    };
+
+    FaultCheck checks[] = {
+      { [](){ return abs(ptdP[1]) > pvOxMaxdP; }, "MAXdP_EXCEEDED" },
+      { [](){ return ptOutputsP[3] > ptMaxP; }, "MAXP_EXCEEDED" },
+    };
+    const size_t numChecks = sizeof (checks) / sizeof(checks[0]);
+
+    for (size_t i = 0; i < numChecks; ++i) {
+      if (checks[i].cond()) {
+        Serial.println(checks[i].msg);
+        currentState = IDLE;
+        return;
+      }
     }
   }
 }
